@@ -1,0 +1,12 @@
+; EXTENSION : ELASTIC-EDR ------------------------------------------
+[default]
+elastic-edr ansible_host={{ip_range}}.53 ansible_connection=ssh ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+
+; Recipe associations -------------------
+[elastic-edr_server]
+elastic-edr
+
+; add elastic agent on windows machines
+; usage : install.yml
+[elastic-edr_agents:children]
+domain

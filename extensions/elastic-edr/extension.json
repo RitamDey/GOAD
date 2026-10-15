@@ -1,0 +1,11 @@
+{
+    "name": "elastic-edr",
+    "description": "Add an Elastic Stack (8.x) with Fleet + Endpoint Security (EDR) and Defend rules, with Elastic Agent on all domain windows machines",
+    "machines": [
+        "elastic-edr"
+    ],
+    "compatibility": [
+        "*"
+    ],
+    "impact": "add an elastic-edr machine and add an elastic agent (endpoint security) on all windows machines"
+}

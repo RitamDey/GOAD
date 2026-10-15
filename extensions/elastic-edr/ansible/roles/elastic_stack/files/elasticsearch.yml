@@ -1,0 +1,25 @@
+# ======================== Elasticsearch Configuration =========================
+# GOAD elastic-edr extension : single node, self managed
+# Security is on, TLS is OFF (isolated lab -> plain http on 9200).
+#
+# --------------------------------- Cluster -----------------------------------
+cluster.name: goad-elastic-edr
+node.name: elastic-edr
+discovery.type: single-node
+#
+# ----------------------------------- Paths ------------------------------------
+path.data: /var/lib/elasticsearch
+path.logs: /var/log/elasticsearch
+#
+# ---------------------------------- Network -----------------------------------
+network.host: 0.0.0.0
+http.port: 9200
+#
+# --------------------------------- Security ----------------------------------
+# X-Pack security on (keystore passwords), TLS off for a simple lab.
+xpack.security.enabled: true
+xpack.security.transport.ssl.enabled: false
+xpack.security.http.ssl.enabled: false
+#
+# --------------------------------- Various -----------------------------------
+action.destructive_requires_name: true

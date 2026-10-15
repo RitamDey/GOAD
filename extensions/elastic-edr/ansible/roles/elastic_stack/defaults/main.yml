@@ -1,0 +1,25 @@
+# elastic-edr extension : stack role defaults
+#
+# Pin the elastic stack version. "8.x" tracks the latest 8.x LTS in the apt repo.
+# You can pin an exact patch (e.g. "8.19.22") for a fully reproducible lab.
+elastic_repo_version: "8.x"
+
+# Elasticsearch java heap. Keep under half of the VM RAM (VM ships with 16GB).
+elastic_heap: "6g"
+
+# Known built-in user passwords (this is a lab, not production)
+elastic_password: "changeme-elastic"
+kibana_system_password: "changeme-kibana"
+
+# Endpoints
+es_http_port: 9200
+kibana_port: 5601
+
+# Fleet
+fleet_agent_policy_id: "goad-edr-policy"
+fleet_policy_name: "GOAD-EDR-Policy"
+enrollment_token_name: "goad-edr-enrollment"
+
+# State directory where credentials / tokens are persisted for re-runs and for
+# the windows agent play to read the enrollment token.
+state_dir: /etc/elastic-edr

@@ -1,0 +1,26 @@
+# GOAD elastic-edr extension : Kibana + Fleet
+server.host: "0.0.0.0"
+server.port: 5601
+elasticsearch.hosts: [ "http://localhost:9200" ]
+elasticsearch.username: "kibana_system"
+elasticsearch.password: "{{ kibana_system_password }}"
+#
+# Fleet : preconfigure the agent policy so enrollment tokens can be issued via API
+# The "system" package (endpoint security on Windows : process lineage, winlog,
+# sysmon events) is attached to the policy, enabling Elastic Defend detection.
+xpack.fleet.packages:
+  - name: system
+    version: latest
+xpack.fleet.agentPolicies:
+  - name: GOAD-EDR-Policy
+    id: goad-edr-policy
+    namespace: default
+    description: "GOAD elastic-edr extension - Elastic Agent with Endpoint Security (EDR)"
+    monitoring_enabled:
+      - logs
+      - metrics
+    package_policies:
+      - name: goad-system
+        id: goad-system
+        package:
+          name: system

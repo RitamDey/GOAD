@@ -1,0 +1,9 @@
+# elastic-edr extension : windows agent role defaults
+#
+# Keep in sync with the stack version (elastic_stack's elastic_repo_version, "8.x").
+# The agent download URL needs an EXACT patch (artifacts.elastic.co has no 8.x zip),
+# so pin a released 8.19.x here. Update both together for a fully reproducible lab.
+elastic_agent_version: "8.19.23"
+
+elastic_agent_download_url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elastic_agent_version }}-windows-x86_64.zip"
+elastic_agent_install_location: "C:\\elastic-agent"
