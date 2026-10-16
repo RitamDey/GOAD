@@ -1,9 +1,16 @@
 # elastic-edr extension : windows agent role defaults
 #
 # Keep in sync with the stack version (elastic_stack's elastic_repo_version, "8.x").
-# The agent download URL needs an EXACT patch (artifacts.elastic.co has no 8.x zip),
+# The agent download needs an EXACT patch (artifacts.elastic.co has no 8.x binary),
 # so pin a released 8.19.x here. Update both together for a fully reproducible lab.
 elastic_agent_version: "8.19.23"
 
-elastic_agent_download_url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elastic_agent_version }}-windows-x86_64.zip"
+# Official Windows install path is the MSI (see "Install Elastic Agent from an MSI
+# package"). msiexec runs `elastic-agent install` under the hood using INSTALLARGS.
+elastic_agent_download_url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elastic_agent_version }}-windows-x86_64.msi"
 elastic_agent_install_location: "C:\\elastic-agent"
+
+# Fleet control-plane URL (base). Kibana serves the Fleet agent protocol (enroll +
+# checkin) on its own port in this single-VM self-managed setup - the agent appends
+# /api/fleet/agents/enroll itself. Data (events) flows to Elasticsearch on 9200.
+elastic_agent_fleet_url: "http://{{ elastic_host }}:{{ kibana_port }}"

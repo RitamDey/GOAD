@@ -6,12 +6,34 @@
 - Add a machine : elastic-edr (ip_range.53, 16GB RAM / 4 cpu)
 
 - Kibana / Fleet is configured on http://{{ip_range}}.53:5601
-- Elastic Stack 8.x (Elasticsearch + Kibana + Fleet) with Endpoint Security (EDR) + Elastic Defend
-- Install Sysmon + Elastic Agent on all domain windows machines (enrolled in Fleet)
+- Elastic Stack 8.x (Elasticsearch + Kibana + Fleet) with the **Elastic Defend
+  engine** (the `endpoint` integration, `EDRComplete` preset) + the `windows`
+  integration (Sysmon / PowerShell / Defender winlog)
+- Installs **Sysmon 14.14** + the **Elastic Agent** (MSI) on all domain windows
+  machines and enrolls them in Fleet
 
 This extension is the full attack / defend / purple team upgrade of the `elk`
 extension. `elk` ships winlogbeat log aggregation, `elastic-edr` ships real
-Fleet + EDR + Defend detection. Do not install both at the same time.
+Fleet + EDR + Defend detection. Do not install both at the same time (both
+install Sysmon).
+
+## What gets deployed on each agent
+
+- The Elastic Agent (Fleet managed, enrolls on Kibana :5601, events to ES :9200)
+- Sysmon 14.14 with the SwiftOnSecurity sysmon-config v74 (EDR event source)
+- The agent policy carries : `system`, Elastic Defend (`endpoint`, EDRComplete)
+  and the `windows` integration limited to the `sysmon_operational`,
+  `powershell_operational` and `windows_defender` streams
+
+Sysmon is pinned to 14.x because 15.x dropped Windows Server 2016 support
+(DC03 runs the 2016 template).
+
+## License / feature levels
+
+Self managed Kibana defaults to the **Basic** license: the EDR engine, malware
+detection and the built-in SIEM rules work out of the box. Behavior /
+ransomware / memory **prevention** need Platinum and auto-degrade on Basic
+(detection is unaffected).
 
 ## Credentials (this is a lab)
 

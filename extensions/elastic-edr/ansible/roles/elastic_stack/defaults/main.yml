@@ -20,6 +20,17 @@ fleet_agent_policy_id: "goad-edr-policy"
 fleet_policy_name: "GOAD-EDR-Policy"
 enrollment_token_name: "goad-edr-enrollment"
 
+# Elastic Defend engine ("endpoint" integration) preset.
+#   EDRComplete   - full EDR : detection + prevention (best, auto-degrades to
+#                   Basic-license features such as memory/behavior prevention off)
+#   DataCollection- detection only (no prevention)
+#   Protection    - prevention only
+edr_preset: "EDRComplete"
+
+# Names of the package policies attached to the EDR agent policy via the API.
+endpoint_policy_name: "goad-elastic-defend"
+windows_policy_name: "goad-windows-sysmon"
+
 # State directory where credentials / tokens are persisted for re-runs and for
 # the windows agent play to read the enrollment token.
 state_dir: /etc/elastic-edr

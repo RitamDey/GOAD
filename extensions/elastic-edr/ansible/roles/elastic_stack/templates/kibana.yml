@@ -4,12 +4,25 @@ server.port: 5601
 elasticsearch.hosts: [ "http://localhost:9200" ]
 elasticsearch.username: "kibana_system"
 elasticsearch.password: "{{ kibana_system_password }}"
+# Data plane : where the (remote) enrolled agents send their events. This is a
+# SEPARATE setting from Kibana's own elasticsearch.hosts - Fleet hands it to each
+# agent's ES output (Fleet auto-generates the per-agent ES API key). It must be
+# the VM's real IP, not localhost, because the agents run on other machines.
+xpack.fleet.agents.elasticsearch.hosts:
+  - "http://{{ hostvars[inventory_hostname].ansible_host }}:{{ es_http_port }}"
 #
-# Fleet : preconfigure the agent policy so enrollment tokens can be issued via API
-# The "system" package (endpoint security on Windows : process lineage, winlog,
-# sysmon events) is attached to the policy, enabling Elastic Defend detection.
+# Fleet : preconfigure the agent policy so enrollment tokens can be issued via API.
+# The three integrations are preinstalled in the local registry (offline safe):
+#   system   -> attached to the policy here (preconfiguration)
+#   endpoint -> Elastic Defend engine, attached via the Fleet API (EDRComplete),
+#               because the EDR engine cannot be preconfigured in kibana.yml
+#   windows  -> Sysmon / PowerShell / Defender winlog, attached via the Fleet API
 xpack.fleet.packages:
   - name: system
+    version: latest
+  - name: endpoint
+    version: latest
+  - name: windows
     version: latest
 xpack.fleet.agentPolicies:
   - name: GOAD-EDR-Policy

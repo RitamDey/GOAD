@@ -1,8 +1,12 @@
 # elastic-edr extension : stack role
 # Deploys a self managed Elastic Stack 8.x (Elasticsearch + Kibana + Fleet) with
 # X-Pack security enabled (TLS disabled for a simple isolated lab) and a
-# preconfigured agent policy carrying the "system" package (Endpoint Security /
-# EDR). Emits a Fleet enrollment token to {{ state_dir }} for the windows agent play.
+# preconfigured agent policy. The "system" package is attached via kibana.yml
+# preconfiguration; the Elastic Defend engine (the "endpoint" integration,
+# EDRComplete preset) and the "windows" integration (Sysmon / PowerShell /
+# Defender winlog) are attached through the Fleet API, since the EDR engine
+# cannot be preconfigured in kibana.yml. Emits a Fleet enrollment token to
+# {{ state_dir }} for the windows agent play.
 
 - name: Ensure required dependencies
   ansible.builtin.apt:
@@ -189,14 +193,228 @@
       kbn-xsrf: "true"
     return_content: yes
   register: policies
-  until: policies.status == 200 and ( (policies.json.list | default(policies.json.items | default([]))) | selectattr('name', 'equalto', fleet_policy_name) | list | length) > 0
+  until: policies.status == 200 and ( (policies.json['list'] | default(policies.json['items'] | default([]))) | selectattr('name', 'equalto', fleet_policy_name) | list | length) > 0
   retries: 15
   delay: 5
   timeout: 30
 
 - name: Set fact policy id (tolerant to list/items response key)
   ansible.builtin.set_fact:
-    policy_id: "{{ (policies.json.list | default(policies.json.items | default([]))) | selectattr('name', 'equalto', fleet_policy_name) | map(attribute='id') | first }}"
+    policy_id: "{{ (policies.json['list'] | default(policies.json['items'] | default([]))) | selectattr('name', 'equalto', fleet_policy_name) | map(attribute='id') | first }}"
+
+# The EDR engine (the "endpoint" / Elastic Defend integration) and the "windows"
+# integration (Sysmon / PowerShell / Defender winlog) cannot be preconfigured in
+# kibana.yml, so they are attached to the policy through the Fleet API. Creating
+# a package policy auto-installs the package in the registry if it is missing
+# (ensureInstalledPackage); xpack.fleet.packages (kibana.yml) preinstalls them at
+# boot as the offline fast-path. We only need to fetch the latest package version
+# to pass in the policy payload.
+
+- name: Set Kibana version fact
+  ansible.builtin.set_fact:
+    kbn_version: "{{ kbn_status.json.version.number | default('') }}"
+
+# Data plane : enrolled (remote) agents write events to Elasticsearch through the
+# Fleet "default" output. That output is created the first time Kibana starts
+# (during the apt install, before this role's kibana.yml is written) with the
+# hardcoded http://localhost:9200 and is NOT rewritten on re-runs. Point it at
+# the VM's real IP so the remote Windows agents reach Elasticsearch (localhost is
+# wrong from their perspective). xpack.fleet.agents.elasticsearch.hosts in
+# kibana.yml covers a brand-new output; this also fixes an existing one.
+- name: Set fact target ES output url (the VM's real IP, for remote agents)
+  ansible.builtin.set_fact:
+    es_output_url: "http://{{ hostvars[inventory_hostname].ansible_host }}:{{ es_http_port }}"
+
+- name: Get the Fleet default output
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/outputs/fleet-default-output"
+    method: GET
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+    return_content: yes
+  register: default_output
+  until: default_output.status == 200
+  retries: 10
+  delay: 5
+  timeout: 30
+
+- name: Point the Fleet default output at the VM (so remote agents reach ES)
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/outputs/fleet-default-output"
+    method: PUT
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      type: "elasticsearch"
+      hosts:
+        - "{{ es_output_url }}"
+  register: set_default_output
+  until: set_default_output.status == 200
+  retries: 5
+  delay: 5
+  timeout: 30
+  when: (default_output.json.item.hosts | default(['']) | list) != [es_output_url]
+
+- name: Fetch endpoint (Elastic Defend) package version
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/epm/packages/endpoint"
+    method: GET
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+    return_content: yes
+  register: endpoint_pkg
+  until: endpoint_pkg.status == 200
+  retries: 10
+  delay: 10
+  timeout: 30
+
+- name: Set fact endpoint package version
+  ansible.builtin.set_fact:
+    endpoint_package_version: "{{ endpoint_pkg.json.item.latestVersion | default(endpoint_pkg.json.item.version) }}"
+
+- name: Fetch windows package version
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/epm/packages/windows"
+    method: GET
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+    return_content: yes
+  register: windows_pkg
+  until: windows_pkg.status == 200
+  retries: 10
+  delay: 10
+  timeout: 30
+
+- name: Set fact windows package version
+  ansible.builtin.set_fact:
+    windows_package_version: "{{ windows_pkg.json.item.latestVersion | default(windows_pkg.json.item.version) }}"
+
+# GET /api/fleet/package_policies has no ?policy_id= filter on 8.x (unknown query
+# keys are rejected), so we list everything and filter locally for idempotency.
+- name: List package policies
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
+    method: GET
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+    return_content: yes
+  register: package_policies
+  until: package_policies.status == 200
+  retries: 5
+  delay: 3
+  timeout: 30
+
+- name: Set fact package policy names on the EDR policy
+  ansible.builtin.set_fact:
+    pp_names: >-
+      {{ (package_policies.json['items'] | default([]))
+         | selectattr('policy_id', 'defined')
+         | selectattr('policy_id', 'equalto', policy_id)
+         | map(attribute='name') | list }}
+
+# Elastic Defend engine : the "endpoint" integration, EDRComplete preset.
+# (official "Create an Elastic Defend policy using the API" payload shape)
+- name: Create Elastic Defend (endpoint) package policy - {{ edr_preset }}
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
+    method: POST
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "{{ endpoint_policy_name }}"
+      description: "GOAD elastic-edr - Elastic Defend engine ({{ edr_preset }} preset)"
+      namespace: "default"
+      policy_id: "{{ policy_id }}"
+      enabled: true
+      inputs:
+        - enabled: true
+          streams: []
+          type: "ENDPOINT_INTEGRATION_CONFIG"
+          config:
+            _config:
+              value:
+                type: "endpoint"
+                endpointConfig:
+                  preset: "{{ edr_preset }}"
+      package:
+        name: "endpoint"
+        title: "Elastic Defend"
+        version: "{{ endpoint_package_version }}"
+  register: endpoint_policy
+  until: endpoint_policy.status in [200, 409]
+  retries: 5
+  delay: 5
+  timeout: 60
+  when: endpoint_policy_name not in pp_names
+
+# Windows integration : Sysmon / PowerShell / Defender winlog streams.
+# These feed the Sysmon events (installed by the sysmon role) into Elasticsearch.
+- name: Create windows package policy (Sysmon / PowerShell / Defender)
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
+    method: POST
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "{{ windows_policy_name }}"
+      description: "GOAD elastic-edr - Sysmon / PowerShell / Defender winlog"
+      namespace: "default"
+      policy_id: "{{ policy_id }}"
+      vars: {}
+      inputs:
+        windows-winlog:
+          enabled: true
+          streams:
+            windows.sysmon_operational:
+              enabled: true
+            windows.powershell_operational:
+              enabled: true
+            windows.windows_defender:
+              enabled: true
+      package:
+        name: "windows"
+        version: "{{ windows_package_version }}"
+  register: windows_policy
+  until: windows_policy.status in [200, 409]
+  retries: 5
+  delay: 5
+  timeout: 60
+  when: windows_policy_name not in pp_names
+
+- name: Fail if the EDR engine policy is not attached
+  ansible.builtin.fail:
+    msg: "The endpoint (Elastic Defend) package policy could not be attached to {{ fleet_policy_name }} (status {{ endpoint_policy.status | default('skipped') }})."
+  when:
+    - endpoint_policy_name not in pp_names
+    - endpoint_policy is defined
+    - endpoint_policy.status not in [200, 409]
 
 # Create a dedicated enrollment token bound to the policy (only if none exists yet).
 - name: List existing enrollment tokens
@@ -216,7 +434,7 @@
 
 - name: Set fact existing token name present
   ansible.builtin.set_fact:
-    token_present: "{{ tokens.json.items | selectattr('name', 'equalto', enrollment_token_name) | list | length > 0 }}"
+    token_present: "{{ tokens.json['items'] | selectattr('name', 'equalto', enrollment_token_name) | list | length > 0 }}"
 
 - name: Create enrollment token for the EDR policy
   ansible.builtin.uri:
@@ -241,7 +459,7 @@
     enrollment_token: >-
       {{ (create_token.json.item.api_key | default(''))
          if (not token_present)
-         else (tokens.json.items | selectattr('name', 'equalto', enrollment_token_name) | map(attribute='api_key') | first) }}
+         else (tokens.json['items'] | selectattr('name', 'equalto', enrollment_token_name) | map(attribute='api_key') | first) }}
 
 - name: Persist enrollment token for the windows agent play
   ansible.builtin.copy:
@@ -270,4 +488,5 @@
       Elasticsearch   : http://{{ hostvars[inventory_hostname].ansible_host }}:{{ es_http_port }}
       elastic user    : {{ elastic_password }}
       kibana_system   : {{ kibana_system_password }}
+      Agent policy    : {{ fleet_policy_name }} (system + Elastic Defend {{ edr_preset }} + Sysmon/PowerShell/Defender)
       Fleet agents    : Management -> Fleet (agents enroll via the enrollment token)

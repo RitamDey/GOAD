@@ -1,6 +1,9 @@
 # Sysmon settings
-sysmon_download_url_base: "https://download.sysinternals.com/files"
+#
+# The Sysmon binaries are bundled in files/Sysmon.zip (pinned Sysmon 14.14).
+# 14.x is the last major line that still supports Windows Server 2016 (DC03);
+# 15.x dropped pre-2019 OSes. Config is the SwiftOnSecurity sysmon-config v74
+# (files/sysmonconfig-export.xml), the latest upstream release.
 sysmon_install_location: "c:\\sysmon"
 sysmon_download_file: Sysmon
 file_ext: .zip
-sysmon_config_url: "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml"

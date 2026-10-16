@@ -1,11 +1,16 @@
 # elastic-edr extension : windows agent role
 # Installs the Elastic Agent on a Windows domain machine and enrolls it in Fleet
-# using the enrollment token (bound to the EDR policy, which carries the system
-# package -> Endpoint Security). Expects vars:
+# using the enrollment token (bound to the EDR policy, which carries the
+# "endpoint" / Elastic Defend engine, the "system" package and the "windows"
+# Sysmon / PowerShell / Defender integration). Expects vars:
 #   elastic_host           - ansible_host of the elastic-edr machine
 #   kibana_port            - Kibana / Fleet port (5601)
 #   edr_enrollment_token   - Fleet enrollment token (base64)
 # Sysmon is expected to be installed first (see the sysmon role).
+#
+# Uses the official MSI installer (msiexec). It runs `elastic-agent install`
+# under the hood with INSTALLARGS = "--url=... --enrollment-token=...".
+# The PowerShell stop-parsing token (--%) keeps INSTALLARGS verbatim.
 
 - name: Check if Elastic Agent service is installed
   win_service:
@@ -18,10 +23,10 @@
     path: "{{ elastic_agent_install_location }}"
     state: directory
 
-- name: Download Elastic Agent ({{ elastic_agent_version }})
+- name: Download Elastic Agent MSI ({{ elastic_agent_version }})
   win_get_url:
     url: "{{ elastic_agent_download_url }}"
-    dest: "{{ elastic_agent_install_location }}\\elastic-agent.zip"
+    dest: "{{ elastic_agent_install_location }}\\elastic-agent-{{ elastic_agent_version }}-windows-x86_64.msi"
   register: ea_download
   until: ea_download is succeeded
   retries: 3
@@ -29,21 +34,14 @@
   when: not ea_service.exists
   no_log: false
 
-- name: Unzip Elastic Agent
-  win_unzip:
-    src: "{{ elastic_agent_install_location }}\\elastic-agent.zip"
-    dest: "{{ elastic_agent_install_location }}"
+- name: Install and enroll Elastic Agent into Fleet (MSI)
+  win_shell: >-
+    "{{ elastic_agent_install_location }}\elastic-agent-{{ elastic_agent_version }}-windows-x86_64.msi"
+    --% INSTALLARGS="--url={{ elastic_agent_fleet_url }} --enrollment-token={{ edr_enrollment_token }}"
   when: not ea_service.exists
-
-- name: Install and enroll Elastic Agent into Fleet
-  win_shell: |
-    $ErrorActionPreference = 'Stop'
-    $dir = Get-ChildItem -Path "C:\elastic-agent" -Directory -Filter "elastic-agent-*-windows-x86_64" | Select-Object -First 1
-    if (-not $dir) { Write-Error "elastic agent folder not found"; exit 1 }
-    $exe = Join-Path $dir.FullName "elastic-agent.exe"
-    & $exe install --url=http://{{ elastic_host }}:{{ kibana_port }} --enrollment-token='{{ edr_enrollment_token }}' --non-interactive
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  when: not ea_service.exists
+  register: ea_msi
+  failed_when: ea_msi.rc not in [0, 3010]
+  changed_when: true
 
 - name: Ensure Elastic Agent service is running
   win_service:
@@ -53,8 +51,7 @@
 
 - name: Show agent status
   win_shell: |
-    $dir = Get-ChildItem -Path "C:\elastic-agent" -Directory -Filter "elastic-agent-*-windows-x86_64" | Select-Object -First 1
-    & (Join-Path $dir.FullName "elastic-agent.exe") status
+    & "C:\Program Files\Elastic\Agent\{{ elastic_agent_version }}\agent\elastic-agent.exe" status
   register: ea_status
   changed_when: false
   failed_when: false
