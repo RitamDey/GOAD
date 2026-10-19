@@ -64,3 +64,30 @@ xpack.fleet.agentPolicies:
         id: goad-system
         package:
           name: system
+        # Pin the goad-system shape: event logs ON (unfiltered - raw material
+        # for custom detection rules), host resource metrics OFF (the single
+        # biggest volume lever; nothing detection-relevant consumes them -
+        # verified against Elastic prepackaged rules AND the 3,227-rule Sigma
+        # corpus, which indexes logs-*/endpoint indices only). To re-enable
+        # any stream later for resource-anomaly experiments, uncomment:
+        # inputs:
+        #   system-system/metrics:
+        #     enabled: true
+        #     streams:
+        #       '[system.cpu]': {enabled: true, vars: {period: 60s}}
+        #       '[system.memory]': {enabled: true, vars: {period: 60s}}
+        #       '[system.network]': {enabled: true, vars: {period: 60s}}
+        #       '[system.uptime]': {enabled: true, vars: {period: 60s}}
+        #       '[system.process_summary]': {enabled: true, vars: {period: 60s}}
+        inputs:
+          system-system/metrics:
+            enabled: false
+          system-winlog:
+            enabled: true
+            streams:
+              '[system.security]':
+                enabled: true
+              '[system.application]':
+                enabled: true
+              '[system.system]':
+                enabled: true

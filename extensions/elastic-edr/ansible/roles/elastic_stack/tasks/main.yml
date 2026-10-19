@@ -650,13 +650,6 @@
               enabled: true
             windows.forwarded:
               enabled: true
-        windows-windows/metrics:
-          enabled: true
-          streams:
-            windows.perfmon:
-              enabled: true
-            windows.service:
-              enabled: true
       package:
         name: "windows"
         version: "{{ windows_package_version }}"

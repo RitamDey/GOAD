@@ -113,10 +113,14 @@ trial in Kibana (Management -> Stack Management -> License).
 
 ## Credentials (this is a lab)
 
-| user          | password             |
-|---------------|----------------------|
-| elastic       | changeme-elastic     |
-| kibana_system | changeme-kibana      |
+| user          | password   |
+|---------------|------------|
+| elastic       | changeme   |
+| kibana_system | changeme   |
+
+One lab password for both users (aligned with the `elk` extension's
+stock-credential convention). Override via instance vars if needed -
+`elastic_stack/defaults/main.yml` is the only place they are defined.
 
 Kibana / Fleet : http://{{ip_range}}.53:5601
 Elasticsearch  : http://{{ip_range}}.53:9200

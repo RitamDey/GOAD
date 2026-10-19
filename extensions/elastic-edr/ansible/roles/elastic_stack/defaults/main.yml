@@ -14,9 +14,13 @@ elastic_repo_version: "8.19.23"
 # Elasticsearch java heap. Keep under half of the VM RAM (VM ships with 16GB).
 elastic_heap: "6g"
 
-# Known built-in user passwords (this is a lab, not production)
-elastic_password: "changeme-elastic"
-kibana_system_password: "changeme-kibana"
+# Known built-in user passwords (this is a lab, not production).
+# One lab password for both users, aligned with the elk extension's
+# stock-credential convention (elk runs ES 7.x with security off; 8.x mandates
+# security, so we keep the stock elastic/changeme pair). Override via instance
+# vars if you want different values - every consumer reads these variables.
+elastic_password: "changeme"
+kibana_system_password: "changeme"
 
 # Endpoints
 es_http_port: 9200
