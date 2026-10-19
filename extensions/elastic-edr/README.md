@@ -23,8 +23,11 @@
       preset) - process lineage, memory, detections, prevention
     - the **`windows` integration** - Sysmon (`sysmon_operational`),
       PowerShell (`powershell` + `powershell_operational`), Defender
-      (`windows_defender`), AppLocker (4 streams), forwarded events + the
-      windows metrics (perfmon / service)
+      (`windows_defender`), AppLocker (4 streams) and forwarded events.
+      The optional Windows perfmon/service metrics input is **intentionally
+      disabled by default** to keep ingestion and disk use manageable; it is
+      not part of the default Fleet policy. Host resource metrics in the
+      separate `system` integration are also disabled by default.
       (note: `windows.forwarded` stays EMPTY unless you stand up a WEF
       collector / Windows Event Subscription on the domain - the stream is
       kept enabled on purpose for the collect-everything philosophy; wire a
@@ -193,6 +196,13 @@ Windows-relevant rules: Linux/macOS/cloud/ML-class rules come up too (ML rules
 auto-skip on the Basic license). They sit enabled-but-dormant on this
 Windows-only lab - harmless, and symmetric with the disable path, which also
 sweeps the whole corpus. Prune them in the UI if you want a shorter rules list.
+
+The default Fleet policy does not collect Windows perfmon/service metrics or
+system resource metrics. Prepackaged rules that query those metric streams can
+therefore remain enabled without matching data in this lab until the relevant
+metrics inputs are deliberately enabled and validated. The presence of an
+enabled rule does not mean its data source is configured or its coverage has
+been tested.
 
 Between provisions your per-rule enable/disable toggles from the Kibana UI
 (Security -> Rules) are preserved for UNCHANGED-flag re-runs - the posture
