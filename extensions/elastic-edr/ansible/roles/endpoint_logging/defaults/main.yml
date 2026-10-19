@@ -1,0 +1,95 @@
+# endpoint_logging role defaults
+#
+# Turns ON the host-side logging that Windows does not enable by default (or
+# enables only on DCs / inconsistently) and that GOAD core does not configure
+# (verified: no auditpol / ScriptBlockLogging / ProcessCreation settings
+# anywhere in GOAD core). The enable-list is the UNION of:
+#   - the Sigma logsource prerequisites (process_creation 1525 rules ->
+#     4688; powershell_operational 481 rules -> 4104), and
+#   - the palantir/windows-event-forwarding WEF-Event-Mappings.md baseline
+#     (the canonical 314-event WEF collection): every subcategory Palantir
+#     maps EXCEPT the five noisy SACL-dependent ones left in the
+#     extra/disabled list below.
+# All events land in channels the agent policy already collects
+# (system.security, windows.powershell_operational) - no new data streams.
+
+# Security audit subcategories enabled via auditpol (success + failure).
+# Applied identically on DCs and member servers: the DC-oriented ones
+# (Directory Service Access / Kerberos Service Ticket Operations) are simply
+# inert on member servers, keeping one shared list.
+endpoint_logging_audit_subcategories:
+  # Detailed Tracking
+  - "Process Creation"                # 4688 (+cmdline via registry below)
+  - "Process Termination"             # 4689 - process-lifetime correlation
+  # Logon/Logoff
+  - "Logon"                           # 4624/4625 - the AD backbone
+  - "Logoff"                          # 4634/4647
+  - "Special Logon"                   # 4672 - admin-logon signal
+  - "Account Lockout"                 # 4740 - password-spray detection
+  - "Other Logon/Logoff Events"       # 4648/4649/4800-4803 - explicit-credential (PTH/WMI) hunting
+  - "User/Device Claims"              # 4626
+  # Account Management
+  - "User Account Management"         # 4720-4776 - explicit-on (default only on DCs)
+  - "Security Group Management"       # 4727-4737, 4799 - group changes
+  - "Computer Account Management"     # 4741-4746
+  - "Other Account Management Events" # 4782 (password-hash access - DCSync-adjacent), 4793
+  - "Distribution Group Management"   # 4744-4763 - GOAD dist-group attack paths
+  # Account Logon
+  - "Credential Validation"           # 4774-4777 - NTLM credential validation
+  - "Kerberos Authentication Service" # 4768/4770/4773 - AS-REP (kerberoast/AS-REP roast)
+  - "Kerberos Service Ticket Operations" # 4769 - TGS, RC4 encryption hunting
+  # DS Access
+  - "Directory Service Access"        # 4661/4662 - DCSync / replication hunting
+  - "Directory Service Changes"       # 5136-5141 - object modifications (5136 needs SACL)
+  # System
+  - "Security State Change"           # 1102 audit log cleared + 4608/4616/4621
+  - "Security System Extension"       # 4610/4611/4614/4622 - auth-package/LSASS loading tells
+  - "System Integrity"                # 5038 code-integrity, 5056-5062 crypto (DPAPI), 4612-4618
+  - "Other System Events"             # 5024-5037 (IPsec), 6400-6409 (WFP)
+  # Policy Change
+  - "Audit Policy Change"             # 4715/4719/4817/4902-4908/4912 - audit policy tampering
+  - "Authentication Policy Change"    # 4706/4707/4713/4716-4718/4739/4864-4867
+  - "Authorization Policy Change"     # 4703-4705/4911/4913 - privilege-escalation tells
+  - "Other Policy Change Events"      # 4714/4826 (BCD loaded)/4909-4910/5063-5070/5447/6144-6145
+  # Object Access (low-volume, non-SACL subsets)
+  - "Other Object Access Events"      # 4696/4698-4702 - SCHEDULED-TASK persistence class + 4671/4691
+
+# Optional subcategories, disabled by default: high volume and/or SACL-
+# dependent duplicates of what Sysmon already captures with better fidelity.
+# Flip any of these into the main list (or set them here) if a hunt needs them:
+endpoint_logging_audit_subcategories_extra:
+  - "Detailed File Share"             # 5145 - the noisiest; GOAD openshares hunting
+  - "File Share"                      # 5140-5144/5168 - share-connect noise
+  - "Registry"                        # 4657/5039 - sysmon 12/13/14 superior
+  - "SAM"                             # SACL-dependent
+  - "MPSSVC Rule-Level Policy Change" # 4944-4958 - firewall churn
+  - "Non Sensitive Privilege Use"     # 4673/4674 - very noisy on DCs; 4672 already on
+  - "Sensitive Privilege Use"         # 4673/4674/4985 - same
+  - "Removable Storage"               # 8006-8018 - enable if USB-exfil hunting
+  - "Handle Manipulation"             # 4690 - noisy duplicate of sysmon access events
+
+# Subcategories deliberately LEFT AT WINDOWS DEFAULTS (in neither list):
+# SACL-heavy or infrastructure-noise families without a Sigma category of
+# their own - RPC Events (5712), Filtering Platform Connection/Packet Drop
+# (5152-5160), Kernel Object, Application Generated, Certification Services
+# (4882-4899), Directory Service Replication, Detailed Directory Service
+# Replication, Network Policy Server, Token Right Adjusted Events,
+# Application Group Management. Add any to the extra list if a hunt needs it.
+
+# Apply the optional "extra" subcategories (the noisy SACL-dependent set above)?
+#   false = main list only (storage-min default, as documented in README)
+#   true  = also enable everything in endpoint_logging_audit_subcategories_extra
+# To enable just ONE of them instead, move its quoted name from the extra list
+# up into endpoint_logging_audit_subcategories. Applies on the next provision
+# run; no reboot; reversible on the host via
+#   auditpol /set /subcategory:"<name>" /success:disable /failure:disable
+endpoint_logging_enable_extra: false
+
+# Include the command line in 4688 events (ProcessCreationIncludeCmdLine_Enabled).
+endpoint_logging_cmdline: true
+
+# PowerShell script block logging (4104) + invocation start (extra GUID detail).
+endpoint_logging_scriptblock: true
+
+# PowerShell module logging (4103) - explicit ON for all modules.
+endpoint_logging_module_logging: true

@@ -1,0 +1,18 @@
+# AppLocker AUDIT-ONLY policy for the GOAD elastic-edr extension.
+#
+# Applies a curated local AppLocker policy (files/applocker-audit.xml) in
+# EnforcementMode="AuditOnly" on every elastic-edr agent: nothing is ever
+# blocked, but Windows emits Warning-class events (8003/8006/8021/8024:
+# "<file> was allowed to run but WOULD have been prevented") for anything
+# executing outside the standard OS/application locations - the drop zones
+# where lateral-movement tooling lands. Those events flow into the
+# windows.applocker_* data streams already enabled on the agent policy.
+#
+# This is local (per-host) policy via Set-AppLockerPolicy - no GPO or domain
+# dependency, idempotent on re-runs. The AppIDSvc service is set to automatic
+# first: it is trigger-started by default and the AppLocker channels only
+# produce events while it runs (event 8008 = "component not available" when
+# it does not).
+
+applocker_policy_file: applocker-audit.xml
+applocker_install_location: "c:\\applocker"

@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  GOAD elastic-edr extension - AppLocker AUDIT-ONLY policy.
+
+  Purpose: generate high-signal AppLocker telemetry WITHOUT blocking anything
+  (purple-team posture, same philosophy as the Elastic Defend detect-only
+  policy). Every rule collection uses EnforcementMode="AuditOnly", so
+  Windows records Warning-class events (8003/8006/8021/8024/8028: "<file>
+  was allowed to run but would have been prevented") for anything executing
+  OUTSIDE the standard OS/application locations - i.e. the user-writable
+  drop zones where lateral-movement and payload tooling lands - while
+  legitimate software logs as informational 8002/8005/8020/8023.
+
+  Rules are the canonical AppLocker default allow-list:
+    - %WINDIR%/*          (Everyone)
+    - %PROGRAMFILES%/*    (Everyone)
+    - * (everything)      for BUILTIN\Administrators
+  for EXE and MSI/Script; the default packaged-app rules for Everyone.
+  Everything else is audited.
+
+  Removal (documented in the extension README):
+    Set-AppLockerPolicy -XmlPolicy on an empty policy, or delete the
+    local policy with: Set-AppLockerPolicy -PolicyObject (New-AppLockerPolicy -XmlPolicy <empty>) - or simply
+    'Set-AppLockerPolicy -Xml C:\path\empty.xml'. See the extension docs.
+-->
+<AppLockerPolicy Version="1">
+  <RuleCollection Type="Exe" EnforcementMode="AuditOnly">
+    <FilePathRule Action="Allow" UserOrGroupSid="S-1-1-0" Name="(Default Rule) All files located in the Windows folder" Description="">
+      <Conditions>
+        <FilePathCondition Path="%WINDIR%\*"/>
+      </Conditions>
+    </FilePathRule>
+    <FilePathRule Action="Allow" UserOrGroupSid="S-1-1-0" Name="(Default Rule) All files located in Program Files" Description="">
+      <Conditions>
+        <FilePathCondition Path="%PROGRAMFILES%\*"/>
+      </Conditions>
+    </FilePathRule>
+    <FilePathRule Action="Allow" UserOrGroupSid="S-1-5-32-544" Name="(Default Rule) All files" Description="">
+      <Conditions>
+        <FilePathCondition Path="*"/>
+      </Conditions>
+    </FilePathRule>
+  </RuleCollection>
+  <RuleCollection Type="Msi" EnforcementMode="AuditOnly">
+    <FilePathRule Action="Allow" UserOrGroupSid="S-1-1-0" Name="(Default Rule) All signed installers" Description="">
+      <Conditions>
+        <FilePublisherCondition ProductName="*" BinaryName="*">
+          <PublisherCondition PublisherName="*" ProductName="*" BinaryName="*" LowSection="0.0.0.0" HighSection="*"/>
+        </FilePublisherCondition>
+      </Conditions>
+    </FilePathRule>
+    <FilePathRule Action="Allow" UserOrGroupSid="S-1-5-32-544" Name="(Default Rule) All files" Description="">
+      <Conditions>
+        <FilePathCondition Path="*"/>
+      </Conditions>
+    </FilePathRule>
+  </RuleCollection>
+  <RuleCollection Type="Script" EnforcementMode="AuditOnly">
+    <FilePathRule Action="Allow" UserOrGroupSid="S-1-5-32-544" Name="(Default Rule) All scripts" Description="">
+      <Conditions>
+        <FilePathCondition Path="*"/>
+      </Conditions>
+    </FilePathRule>
+  </RuleCollection>
+  <RuleCollection Type="Packaged app Installation" EnforcementMode="AuditOnly">
+    <PackagedAppRule Action="Allow" UserOrGroupSid="S-1-1-0" Name="(Default Rule) All signed packaged apps" Description="">
+      <Conditions>
+        <PublisherCondition PublisherName="*" ProductName="*" BinaryName="*" HighSection="*" LowSection="0.0.0.0"/>
+      </Conditions>
+    </PackagedAppRule>
+  </RuleCollection>
+  <RuleCollection Type="Packaged app Execution" EnforcementMode="AuditOnly">
+    <PackagedAppRule Action="Allow" UserOrGroupSid="S-1-1-0" Name="(Default Rule) All signed packaged apps" Description="">
+      <Conditions>
+        <PublisherCondition PublisherName="*" ProductName="*" BinaryName="*" HighSection="*" LowSection="0.0.0.0"/>
+      </Conditions>
+    </PackagedAppRule>
+  </RuleCollection>
+</AppLockerPolicy>

@@ -404,7 +404,16 @@
 		<!--DATA: UtcTime, ProcessGuid, ProcessId, Image, ImageLoaded, Hashes, Signed, Signature, SignatureStatus-->
 	<RuleGroup name="" groupRelation="or">
 		<ImageLoad onmatch="include">
-			<!--NOTE: Using "include" with no rules means nothing in this section will be logged-->
+			<!--GOAD elastic-edr: enabled for DLL-sideloading telemetry.
+			Scoped to unsigned/system-path DLL loads OUTSIDE the standard image
+			locations + suspicious names, to keep volume manageable.-->
+			<Image condition="begin with">C:\Users\</Image>
+			<Image condition="begin with">C:\ProgramData\</Image>
+			<ImageLoaded condition="contains">\Temp\</ImageLoaded>
+			<ImageLoaded condition="end with">mscorwks.dll</ImageLoaded>
+			<ImageLoaded condition="end with">clr.dll</ImageLoaded>
+			<ImageLoaded condition="end with">samlib.dll</ImageLoaded>
+			<ImageLoaded condition="end with">vaultcli.dll</ImageLoaded>
 		</ImageLoad>
 	</RuleGroup>
 
@@ -439,7 +448,9 @@
 		<!--DATA: UtcTime, ProcessGuid, ProcessId, Image, Device-->
 	<RuleGroup name="" groupRelation="or">
 		<RawAccessRead onmatch="include">
-			<!--NOTE: Using "include" with no rules means nothing in this section will be logged-->
+			<!--GOAD elastic-edr: enabled for raw-disk access (ACL bypass) telemetry.
+			Devices only, to keep volume low - user-mode file access stays off.-->
+			<TargetFilename condition="begin with">\Device\</TargetFilename>
 		</RawAccessRead>
 	</RuleGroup>
 
@@ -451,7 +462,20 @@
 		<!--DATA: UtcTime, SourceProcessGuid, SourceProcessId, SourceThreadId, SourceImage, TargetProcessGuid, TargetProcessId, TargetImage, GrantedAccess, CallTrace-->
 	<RuleGroup name="" groupRelation="or">
 		<ProcessAccess onmatch="include">
-			<!--NOTE: Using "include" with no rules means nothing in this section will be logged-->
+			<!--GOAD elastic-edr: enabled for credential-access hunting.
+			Scoped to the classic dump targets + suspicious sources to keep
+			volume manageable (v74's own warning: unrestricted 10 = high load).-->
+			<TargetImage condition="is">C:\Windows\system32\lsass.exe</TargetImage>
+			<TargetImage condition="is">C:\Windows\syswow64\lsass.exe</TargetImage>
+			<TargetImage condition="is">C:\Windows\system32\winlogon.exe</TargetImage>
+			<TargetImage condition="ends with">MsMpEng.exe</TargetImage>
+			<SourceImage condition="ends with">procdump64.exe</SourceImage>
+			<SourceImage condition="ends with">procdump.exe</SourceImage>
+			<SourceImage condition="ends with">Taskmgr.exe</SourceImage>
+			<SourceImage condition="ends with">ProcessHacker.exe</SourceImage>
+			<GrantedAccess condition="is">0x1010</GrantedAccess>
+			<GrantedAccess condition="is">0x143a</GrantedAccess>
+			<GrantedAccess condition="is">0x1410</GrantedAccess>
 		</ProcessAccess>
 	</RuleGroup>
 
@@ -823,7 +847,17 @@
 		<!--DATA: UtcTime, ProcessGuid, ProcessId, PipeName, Image-->
 	<RuleGroup name="" groupRelation="or">
 		<PipeEvent onmatch="include">
-			<!--NOTE: Using incide with no rules means nothing in this section will be logged-->
+			<!--GOAD elastic-edr: enabled for named-pipe C2 detection
+			(Cobalt Strike SMB beacon style). Exclude routine system pipes.-->
+			<PipeName condition="end with"> Pipe</PipeName>
+			<PipeName condition="end with">\lsass</PipeName>
+			<PipeName condition="end with">\status_</PipeName>
+			<PipeName condition="end with">\ctl</PipeName>
+			<PipeName condition="contains">paexec</PipeName>
+			<PipeName condition="contains">psexec</PipeName>
+			<PipeName condition="contains">remcom</PipeName>
+			<PipeName condition="contains">csexec</PipeName>
+			<PipeName condition="begin with">\PPTAccess\</PipeName>
 		</PipeEvent>
 	</RuleGroup>
 
@@ -1103,18 +1137,23 @@
 
 	<!--SYSMON EVENT ID 23 : FILE DELETE [FileDelete]-->
 		<!--EVENT 22: "File Delete"-->
-		<!--COMMENT:	Sandbox usage. When a program signals to Windows a file should be deleted or wiped, Sysmon may be able to capture it. 
+		<!--COMMENT:	Sandbox usage. When a program signals to Windows a file should be deleted or wiped, Sysmon may be able to capture it.
 			[ https://isc.sans.edu/forums/diary/Sysmon+and+File+Deletion/26084/ ]
 		-->
 
 		<!--DATA: RuleName, UtcTime, ProcessGuid, ProcessId, User, Image, TargetFilename, Hashes, IsExecutable, Archived -->
 
-	<!--
+	<!--GOAD elastic-edr: FileDelete ENABLED (was fully commented out in v74).
+	Ransomware / dropper-cleanup telemetry. Include-with-no-rules does not
+	log, so scope it to user-writable + temp drop zones.-->
 	<RuleGroup name="" groupRelation="or">
-		<ClipboardChange onmatch="include">
-		</ClipboardChange>
+		<FileDelete onmatch="include">
+			<TargetFilename condition="begin with">C:\Users\</TargetFilename>
+			<TargetFilename condition="begin with">C:\ProgramData\</TargetFilename>
+			<TargetFilename condition="begin with">\Device\HarddiskVolumeShadowCopy</TargetFilename>
+			<TargetFilename condition="end with">.temp</TargetFilename>
+		</FileDelete>
 	</RuleGroup>
-	-->
 
 	<!--SYSMON EVENT ID 24 : CLIPBOARD EVENT MONITORING [ClipboardChange]-->
 		<!--EVENT 24: "Clipboard changed"-->

@@ -22,14 +22,56 @@ install Sysmon).
 ## What gets deployed on each agent
 
 - The Elastic Agent (Fleet managed, enrolls on Fleet Server :8220, events to ES :9200)
-- Sysmon 14.14 with the SwiftOnSecurity sysmon-config v74 (EDR event source)
+- Sysmon 14.14 with a **tuned SwiftOnSecurity sysmon-config v74** (EDR event
+  source; 10/23/17-18/7/9 enabled by the extension, see the Sysmon section)
+- An **AppLocker audit-only policy**: nothing blocked, but Warning-class
+  "would have been prevented" events (8003/8006/8021/8024) for anything
+  executing outside standard locations - local per-host policy, no GPO
+- **Host-side logging enablement**: 27 audit subcategories (the Sigma
+  logsource prerequisites + the Palantir WEF baseline) - 4688/4689 process
+  creation with command lines, 4104 script-block + 4103 module logging,
+  the full Logon/Logoff, Account Management and Account Logon families
+  (4624-4648/4720-4799/4776/4768/4769), 4662/5136 DS access/changes,
+  scheduled-task events 4696-4702, 1102 audit-log cleared, PNP activity,
+  System Integrity. Noisy SACL-dependent families (Registry, File Share,
+  Privilege Use, MPSSVC, SAM) stay disabled by default - enable them all
+  later with `endpoint_logging_enable_extra: true`, or move individual
+  names from `endpoint_logging_audit_subcategories_extra` up into
+  `endpoint_logging_audit_subcategories` (applies on the next provision
+  run, no reboot; reversible via `auditpol /set ... /disable`)
 - The agent policy carries : `system`, Elastic Defend (`endpoint`, EDRComplete)
   and the `windows` integration with the `sysmon_operational`, `powershell`,
   `powershell_operational`, `windows_defender`, `applocker_*` and `forwarded`
-  winlog streams + windows metrics
+  winlog streams (host resource metrics are intentionally disabled)
 
 Sysmon is pinned to 14.x because 15.x dropped Windows Server 2016 support
 (DC03 runs the 2016 template).
+
+### Sysmon config tuning (detection engineering)
+
+Sysmon only logs the event types its XML config tells it to log. This
+extension ships a **tuned SwiftOnSecurity sysmon-config v74**
+(`ansible/roles/sysmon/files/sysmonconfig-export.xml` in the extension), copied
+to `c:\sysmon\sysmonconfig-export.xml` on every agent. Compared to stock v74,
+this extension **enables the event types most community detections rely on**:
+
+| Sysmon event | stock v74 | shipped by this extension | what it gives you |
+|---|---|---|---|
+| 10 ProcessAccess | off | **on** - scoped to lsass/winlogon/MsMpEng targets, dump-tool sources and dump-capability access masks | credential-dump hunting (mimikatz-class) |
+| 23 FileDelete | commented out | **on** - user paths, ProgramData, shadow copies, .temp | ransomware / dropper-cleanup tells |
+| 17/18 PipeEvent | off | **on** - suspicious pipes (psexec/paexec/remcom/csexec classes, lsass, status_*) | named-pipe C2 detection |
+| 7 ImageLoad | off | **on** - loads from user paths/ProgramData/Temp + credential-DLLs | DLL-sideloading telemetry |
+| 9 RawAccessRead | off | **on** - device path reads | raw-disk access (ACL bypass) |
+
+Already on in stock v74 (kept as-is): 1 (process), 2 (file time), 3 (network),
+5 (terminate), 6 (driver), 8 (remote thread), 11 (file create),
+12/13/14 (registry), 15 (ADS), 16, 19 (WMI), 22 (DNS), 25 (tampering).
+
+The scoping in each section keeps volume manageable (stock v74's warning about
+event 10 applies only if you open it up to all targets). To tune further, edit
+the XML in the repo and reload on hosts with
+`sysmon64.exe -c c:\sysmon\sysmonconfig-export.xml` (the install role only
+runs the initial `-i` on first install).
 
 ## Architecture / ports
 
@@ -114,7 +156,7 @@ install_extension elastic-edr
 
 ## Usage (purple team)
 
-- Open Kibana : http://{{ip_range}}.53:5601 (elastic / changeme-elastic)
+- Open Kibana : http://{{ip_range}}.53:5601 (elastic / changeme)
 - Management -> Fleet : you should see the windows domain machines as agents
 - Run a GOAD attack (e.g. mimikatz on SRV02, kerberoast, ...)
 - Look for the generated alert in Kibana -> Security -> Alerts

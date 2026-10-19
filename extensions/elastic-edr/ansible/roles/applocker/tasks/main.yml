@@ -1,0 +1,37 @@
+# elastic-edr extension : applocker role
+# Audit-only AppLocker policy (alert-only, nothing blocked) feeding the
+# windows.applocker_* data streams. See defaults/main.yml + the policy XML
+# header for the full rationale.
+
+- name: Ensure AppLocker install directory exists
+  ansible.windows.win_file:
+    path: "{{ applocker_install_location }}"
+    state: directory
+
+- name: Copy the AppLocker audit policy
+  ansible.windows.win_copy:
+    src: "{{ applocker_policy_file }}"
+    dest: "{{ applocker_install_location }}\\{{ applocker_policy_file }}"
+
+# AppIDSvc (Application Identity) must be running for AppLocker to evaluate
+# and log anything; default is trigger-start, force automatic for a lab.
+- name: Set AppIDSvc to automatic (required for AppLocker eventing)
+  ansible.windows.win_shell: Set-Service -Name AppIDSvc -StartupType Automatic
+  register: appidsvc_result
+  changed_when: "'changed' in appidsvc_result.stdout_lines | lower"
+
+- name: Apply the AppLocker audit-only policy (local policy, idempotent)
+  ansible.windows.win_shell: >-
+    Set-AppLockerPolicy -XmlPolicy "{{ applocker_install_location }}\{{ applocker_policy_file }}"
+  register: applocker_apply
+  changed_when: true
+  failed_when: applocker_apply.rc is defined and applocker_apply.rc != 0
+
+- name: Verify the AppLocker policy is active (audit mode)
+  ansible.windows.win_shell: |
+    $p = Get-AppLockerPolicy -Effective -Xml
+    if ($p -notmatch 'AuditOnly') { Write-Error 'AppLocker audit policy not active'; exit 1 }
+    Write-Output 'AppLocker audit-only policy active'
+  register: applocker_verify
+  changed_when: false
+  failed_when: false

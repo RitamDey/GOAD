@@ -28,9 +28,35 @@
 - **Enables the Detection Engine and installs + enables the prepackaged SIEM
   detection rules** (enable index -> install prepackaged -> bulk-enable Windows
   rules) - otherwise the engine collects events but fires no alerts
-- Installs **Sysmon 14.14** (SwiftOnSecurity sysmon-config v74) + the
-  **Elastic Agent** (MSI, the official Windows install path) on every domain
-  Windows machine and enrolls it in the Fleet Server using an enrollment token
+- On every domain Windows machine:
+    - **Sysmon 14.14** (tuned SwiftOnSecurity sysmon-config v74; 10/23/17-18/7/9
+      enabled by the extension, see the Sysmon section) as the EDR event source
+    - an **AppLocker AUDIT-ONLY policy** (`applocker` role): nothing is ever
+      blocked, but Windows records Warning-class "would have been prevented"
+      events (8003/8006/8021/8024) for anything executing outside the standard
+      OS/application locations - the drop zones where lateral-movement tooling
+      lands. Local per-host policy via `Set-AppLockerPolicy`, no GPO needed.
+      The AppIDSvc service is set to automatic so the channels actually emit.
+    - **host-side logging enablement** (`endpoint_logging` role) - 27 audit
+      subcategories enabled (success+failure), the union of the Sigma
+      logsource prerequisites and the Palantir WEF baseline:
+      Security **4688/4689** process creation **with command lines**
+      (unlocks 1525 process_creation Sigma rules), **4104** PowerShell
+      script-block logging + **4103** module logging (unlocks 481
+      powershell_operational rules), the full **Logon/Logoff + Account
+      Management + Account Logon** families (4624-4648/4720-4799/4776/
+      4768/4769), **4662/5136** DS access/changes (DCSync/replication
+      hunting), scheduled-task events (**4696-4702**), **1102** audit-log
+      cleared, PNP activity, System Integrity (code-integrity/DPAPI crypto).
+      The noisy SACL-dependent families (Registry, File Share/5145,
+      Privilege Use, MPSSVC, SAM, Handle Manipulation) are deliberately
+      left disabled - enable them all later with
+      `endpoint_logging_enable_extra: true`, or move individual names from
+      `endpoint_logging_audit_subcategories_extra` up into
+      `endpoint_logging_audit_subcategories` (applies on the next provision
+      run, no reboot; reversible via `auditpol /set ... /disable`).
+    - the **Elastic Agent** (MSI, the official Windows install path), enrolled
+      in the Fleet Server using an enrollment token
 - Kibana is served on http://{{ip_range}}.53:5601 (Fleet management + Alerts UI)
 - Run a GOAD attack and watch the alert appear in Kibana -> Security -> Alerts
 
@@ -75,6 +101,32 @@ package versions in `kibana.yml` together - see the comments in
 
 Sysmon is pinned to 14.x because 15.x dropped Windows Server 2016 support and
 DC03 runs the `win2016-server-x64-template`.
+
+### Sysmon config tuning (detection engineering)
+
+Sysmon only logs the event types its XML config tells it to log. This
+extension ships a **tuned SwiftOnSecurity sysmon-config v74**
+(`ansible/roles/sysmon/files/sysmonconfig-export.xml`), copied to
+`c:\sysmon\sysmonconfig-export.xml` on every agent. Compared to stock v74,
+this extension **enables the event types most community detections rely on**:
+
+| Sysmon event | stock v74 | shipped by this extension | what it gives you |
+|---|---|---|---|
+| 10 ProcessAccess | off | **on** - scoped to lsass/winlogon/MsMpEng targets, dump-tool sources and dump-capability access masks | credential-dump hunting (mimikatz-class) |
+| 23 FileDelete | commented out | **on** - user paths, ProgramData, shadow copies, .temp | ransomware / dropper-cleanup tells |
+| 17/18 PipeEvent | off | **on** - suspicious pipes (psexec/paexec/remcom/csexec classes, lsass, status_*) | named-pipe C2 detection |
+| 7 ImageLoad | off | **on** - loads from user paths/ProgramData/Temp + credential-DLLs | DLL-sideloading telemetry |
+| 9 RawAccessRead | off | **on** - device path reads | raw-disk access (ACL bypass) |
+
+Already on in stock v74 (kept as-is): 1 (process), 2 (file time), 3 (network),
+5 (terminate), 6 (driver), 8 (remote thread), 11 (file create),
+12/13/14 (registry), 15 (ADS), 16, 19 (WMI), 22 (DNS), 25 (tampering).
+
+The scoping in each section keeps volume manageable (stock v74's warning about
+event 10 applies only if you open it up to all targets). To tune further, edit
+the XML in the repo and reload on hosts with
+`sysmon64.exe -c c:\sysmon\sysmonconfig-export.xml` (the install role only
+runs the initial `-i` on first install).
 
 ## Coexistence with other extensions
 
