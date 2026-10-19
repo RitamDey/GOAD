@@ -36,6 +36,16 @@ kibana_system_password: "changeme"
 es_http_port: 9200
 kibana_port: 5601
 
+# Log retention (ILM). The observation lab accumulates GBs/day from 5-7
+# chatty hosts (Sysmon 10/17/18/23/7/9 + full winlog + 4688-with-cmdline +
+# 4103 + Defend) onto an 80GB single node; without expiry Elasticsearch hits
+# its flood watermark in a few weeks and turns the cluster read-only - the
+# lab dies mid-hunt with the least helpful error in Elastic. This ships a
+# minimal ILM policy (delete phase) + an index template binding logs-*/metrics-*
+# to it. 60d is the headroom default; measure real disk growth during the
+# live run and tighten if needed (README "Data retention" has the disk math).
+elastic_ilm_retention_days: 60
+
 # Fleet
 fleet_agent_policy_id: "goad-edr-policy"
 fleet_policy_name: "GOAD-EDR-Policy"

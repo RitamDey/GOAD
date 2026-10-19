@@ -211,6 +211,32 @@ install_extension elastic-edr
 - Run a GOAD attack (e.g. mimikatz on SRV02, kerberoast, ...)
 - Look for the generated alert in Kibana -> Security -> Alerts
 
+## Data retention (ILM)
+
+The lab ingests several GB/day (Sysmon + full winlog + 4688-with-cmdline +
+Defend from 5-7 hosts) onto an 80GB single node. Without expiry, Elasticsearch
+hits its flood watermark within weeks and turns the cluster READ-ONLY. The
+install ships a minimal ILM policy (`goad-edr-logs`, delete phase) bound to
+`logs-*` and `metrics-*`.
+
+- Default window: **60 days** (`elastic_ilm_retention_days` in
+  `elastic_stack/defaults/main.yml`)
+- At ~1GB/day you hold ~60GB of indices - tight on 80GB with the stack
+  itself. Measure real growth (`GET _cat/indices?v&s=store.size:desc`) and
+  tighten to 30-45d if needed.
+- Change the var and re-provision: both PUTs are idempotent.
+
 ## Uninstall
 
-- Not implemented yet
+Per-host teardown of everything the extension puts ON THE ENDPOINTS plus the
+extension state: `ansible/uninstall.yml` (2 plays, mirrors install.yml).
+
+Removes: the Elastic Agent (MSI uninstall), Sysmon (service + `c:\sysmon`),
+the AppLocker policy (restored to a default allow-everyone policy, AppIDSvc
+back to Manual), all 27+9 audit subcategories (disabled again), the 5
+PowerShell/4688 registry values, the install directories, and
+`/etc/elastic-edr` on the ELASTIC-EDR machine.
+
+Kept on purpose: the elasticsearch/kibana packages, the apt repo, the
+detection rules and all event indices (they hold your detection work). Full
+stack purge commands are in the `uninstall.yml` header.

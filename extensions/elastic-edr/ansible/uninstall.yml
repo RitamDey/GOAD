@@ -1,0 +1,162 @@
+# elastic-edr extension : uninstall playbook
+# Reverse of install.yml, best-effort per host: removes everything the
+# extension PUT ON THE ENDPOINTS and the extension's own state. One command:
+#
+#   instance_id> uninstall_extension elastic-edr     (if wired to this file)
+#   ... or run directly from the provisioner container:
+#   ansible-playbook -i <inventory> extensions/elastic-edr/ansible/uninstall.yml
+#
+# What IS removed:
+#   - Elastic Agent (service + enrollment + C:\Program Files\Elastic\Agent)
+#   - Sysmon (sysmon64 service, c:\sysmon)
+#   - the AppLocker policy (restored to a default allow-everyone EXE policy)
+#     and the AppIDSvc startup change (back to Manual, the Windows default)
+#   - ALL audit subcategories the endpoint_logging role enabled (27 + the 9
+#     extras, disabled again by name)
+#   - the 5 registry values the endpoint_logging role wrote
+#   - the extension state dir (/etc/elastic-edr) on the ELK-EDR VM
+#
+# What is NOT removed (deliberate - the stack is the lab's control plane and
+# may hold detection work you want to keep):
+#   - the elasticsearch / kibana apt packages, the elastic apt repo + key
+#   - the detection rules, alerts and event indices
+#   - the Fleet Server registration inside Kibana (orphaned agent entries can
+#     be removed in Fleet UI: Management -> Fleet -> Agents)
+# To fully purge the stack VM:
+#   sudo apt-get purge elasticsearch kibana && sudo rm -rf /etc/elasticsearch \
+#     /var/lib/elasticsearch /etc/kibana /var/lib/kibana /etc/elastic-edr
+
+- name: Uninstall Elastic Agent + Sysmon + AppLocker + logging (windows machines)
+  hosts: elastic-edr_agents
+  gather_facts: yes
+  tasks:
+    # ---- Elastic Agent -----------------------------------------------------
+    - name: Check if the Elastic Agent is installed
+      ansible.windows.win_service:
+        name: elastic-agent
+      register: ea_service
+      failed_when: false
+
+    - name: Uninstall the Elastic Agent (MSI product code)
+      ansible.windows.win_shell: |
+        $prod = Get-Package -Name 'Elastic Agent' -ErrorAction SilentlyContinue
+        if ($prod) {
+          Uninstall-Package -Name 'Elastic Agent' -Force
+          Write-Output 'uninstalled'
+        } else {
+          Write-Output 'not-present'
+        }
+      register: ea_uninstall
+      changed_when: (ea_uninstall.stdout | default('')) is search('uninstalled')
+      failed_when: false
+      when: ea_service.exists | default(false)
+
+    - name: Remove the Elastic Agent installer leftovers
+      ansible.windows.win_file:
+        path: "{{ elastic_agent_install_location }}"
+        state: absent
+      failed_when: false
+
+    # ---- Sysmon ------------------------------------------------------------
+    - name: Check if Sysmon is installed
+      ansible.windows.win_stat:
+        path: "{{ sysmon_install_location }}\\sysmon64.exe"
+      register: sysmon_bin
+      failed_when: false
+
+    - name: Uninstall Sysmon (service + drivers)
+      ansible.windows.win_command: "{{ sysmon_install_location }}\\sysmon64.exe -u force"
+      args:
+        chdir: "{{ sysmon_install_location }}"
+      register: sysmon_uninstall
+      changed_when: sysmon_uninstall.rc == 0
+      failed_when: false
+      when: sysmon_bin.stat.exists | default(false)
+
+    - name: Remove the Sysmon directory
+      ansible.windows.win_file:
+        path: "{{ sysmon_install_location }}"
+        state: absent
+      failed_when: false
+
+    # ---- AppLocker ---------------------------------------------------------
+    # Restore a default allow-everyone EXE policy (Windows' empty-state
+    # equivalent: rules that allow Everyone, enforcement NotConfigured) so the
+    # host is not left with our audit-only rules. AppIDSvc goes back to Manual
+    # (the Windows default trigger-start).
+    - name: Restore a default (allow-everyone) AppLocker policy
+      ansible.windows.win_shell: |
+        [xml]$doc = @'
+        <AppLockerPolicy Version="1">
+          <RuleCollection Type="Exe" EnforcementMode="NotConfigured">
+            <FilePathRule Action="Allow" UserOrGroupSid="S-1-1-0" Name="Everyone - all paths" Description="Default allow">
+              <Conditions>
+                <FilePathCondition Path="*"/>
+              </Conditions>
+            </FilePathRule>
+          </RuleCollection>
+        </AppLockerPolicy>
+        '@
+        $doc.Save("$env:TEMP\applocker-default.xml")
+        Set-AppLockerPolicy -XmlPolicy "$env:TEMP\applocker-default.xml"
+        Remove-Item "$env:TEMP\applocker-default.xml" -Force
+      register: applocker_reset
+      changed_when: applocker_reset.rc == 0
+      failed_when: false
+
+    - name: Restore AppIDSvc to Manual (Windows default)
+      ansible.windows.win_shell: Set-Service -Name AppIDSvc -StartupType Manual
+      changed_when: false
+      failed_when: false
+
+    - name: Remove the AppLocker policy copy directory
+      ansible.windows.win_file:
+        path: "{{ applocker_install_location }}"
+        state: absent
+      failed_when: false
+
+    # ---- Host-side logging (endpoint_logging role reverse) ------------------
+    - name: Disable the security audit subcategories enabled by the extension
+      ansible.windows.win_shell: >-
+        auditpol /set /subcategory:"{{ item }}" /success:disable /failure:disable
+      loop: "{{ endpoint_logging_audit_subcategories
+                + (endpoint_logging_audit_subcategories_extra | default([])) }}"
+      changed_when: false
+      failed_when: false
+
+    - name: Remove the PowerShell logging registry values
+      ansible.windows.win_regedit:
+        path: "{{ item.path }}"
+        name: "{{ item.name }}"
+        state: absent
+      loop:
+        - path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit
+          name: ProcessCreationIncludeCmdLine_Enabled
+        - path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ScriptBlockLogging
+          name: EnableScriptBlockLogging
+        - path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ScriptBlockLogging
+          name: EnableScriptBlockInvocationLogging
+        - path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ModuleLogging
+          name: EnableModuleLogging
+        - path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames
+          name: "*"
+      changed_when: false
+      failed_when: false
+
+- name: Remove the extension state (ELASTIC-EDR machine)
+  hosts: elastic-edr_server
+  become: yes
+  tasks:
+    - name: Remove the state dir (tokens, passwords, posture markers)
+      ansible.builtin.file:
+        path: "{{ state_dir }}"
+        state: absent
+      failed_when: false
+
+    - name: Show what was intentionally kept
+      ansible.builtin.debug:
+        msg: >-
+          Endpoint agents, Sysmon, AppLocker policy and host-side logging have
+          been removed. The Elasticsearch/Kibana stack, the apt repo, the
+          detection rules and the event indices were intentionally kept - see
+          the header of uninstall.yml for the full-purge commands.

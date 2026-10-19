@@ -239,6 +239,23 @@ stock-credential convention). Override via instance vars if needed -
 Kibana / Fleet : http://{{ip_range}}.53:5601
 Elasticsearch  : http://{{ip_range}}.53:9200
 
+## Data retention (ILM)
+
+The lab ingests several GB/day (Sysmon 10/17/18/23/7/9 + full winlog +
+4688-with-cmdline + 4103 + Defend from 5-7 hosts) onto an 80GB single node.
+Without expiry, Elasticsearch hits its flood watermark within weeks and turns
+the cluster READ-ONLY - the lab dies mid-hunt with a cryptic error. The
+install ships a minimal ILM policy (`goad-edr-logs`, delete phase) bound to
+`logs-*` and `metrics-*` via an index template.
+
+- Default window: **60 days** (`elastic_ilm_retention_days` in
+  `elastic_stack/defaults/main.yml`)
+- Disk math for the default: at ~1GB/day you hold ~60GB of indices - tight on
+  80GB with the stack itself. Measure real growth after a few days
+  (`GET _cat/indices?v&s=store.size:desc`) and tighten to 30-45d if needed.
+- Change `elastic_ilm_retention_days` and re-provision: both PUTs are
+  idempotent and re-apply the policy.
+
 ## prerequisites
 
 - 16GB RAM / 4 cpu / >= 80GB free disk on the ELASTIC-EDR machine (already set in
@@ -257,7 +274,22 @@ instance_id> install_extension elastic-edr
 
 ## Uninstall
 
-- Not implemented yet
+Per-host teardown of everything the extension puts ON THE ENDPOINTS plus the
+extension state - `ansible/uninstall.yml` (2 plays, mirrors install.yml):
+
+```
+ansible-playbook -i <inventory> extensions/elastic-edr/ansible/uninstall.yml
+```
+
+Removes: the Elastic Agent (MSI uninstall), Sysmon (service + `c:\sysmon`),
+the AppLocker policy (restored to a default allow-everyone policy, AppIDSvc
+back to Manual), all 27+9 audit subcategories (disabled again), the 5
+PowerShell/4688 registry values, the `C:\elastic-agent` / `c:\applocker`
+directories, and `/etc/elastic-edr` on the ELASTIC-EDR machine.
+
+Kept on purpose: the elasticsearch/kibana packages, the apt repo, the
+detection rules and all event indices (they hold your detection work). Full
+stack purge commands are in the `uninstall.yml` header.
 
 ## credits
 - Based on the structure of the `elk` and `wazuh` extensions

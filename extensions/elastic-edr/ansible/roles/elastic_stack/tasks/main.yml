@@ -339,6 +339,58 @@
   delay: 5
   changed_when: false
 
+# ---------------------------------------------------------------------------
+# Data retention (ILM): without an expiry the observation lab floods the 80GB
+# single node in a few weeks (GBs/day from Sysmon + full winlog + 4688-cmdline
+# + Defend) and the cluster goes read-only mid-hunt. Minimal policy: delete
+# everything in logs-*/metrics-* after elastic_ilm_retention_days. Both PUTs
+# are idempotent (full replacement semantics), safe on re-runs.
+# ---------------------------------------------------------------------------
+- name: Install the goad-edr-logs ILM policy (delete after retention window)
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/_ilm/policy/goad-edr-logs"
+    method: PUT
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      policy:
+        phases:
+          delete:
+            min_age: "{{ elastic_ilm_retention_days }}d"
+            actions:
+              delete: {}
+  register: es_ilm_policy
+  until: es_ilm_policy.status == 200
+  retries: 5
+  delay: 5
+  changed_when: false
+
+- name: Bind logs-*/metrics-* indices to the ILM policy (index template)
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/_index_template/goad-edr-logs"
+    method: PUT
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      index_patterns:
+        - "logs-*"
+        - "metrics-*"
+      priority: 200
+      template:
+        settings:
+          index.lifecycle.name: goad-edr-logs
+  register: es_ilm_template
+  until: es_ilm_template.status == 200
+  retries: 5
+  delay: 5
+  changed_when: false
+
 - name: Init Fleet setup (creates indices / default output scaffolding)
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/setup"
