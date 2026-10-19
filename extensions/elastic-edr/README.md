@@ -53,16 +53,54 @@ Kibana on 5601 - only the agent control plane moves to 8220.
 
 ## Version pins (reproducible lab)
 
-| component        | version   | where |
-|------------------|-----------|-------|
-| Elastic stack    | 8.x       | `elastic_stack/defaults` (`elastic_repo_version`) |
-| Elastic agent    | 8.19.23   | `elastic_agent_win/defaults` (MSI) + `elastic_stack/defaults` (linux tarball, Fleet Server) |
-| Sysmon           | 14.14     | bundled `sysmon/files/Sysmon.zip` (sha256 `878fa596b2b8f0080c716d1840c0fcf3cebb46ebabe5b169f6cb40bbf81d9aef`) |
-| Sysmon config    | v74       | bundled `sysmon/files/sysmonconfig-export.xml` (latest upstream release) |
-| Defend preset    | EDRComplete | `elastic_stack/defaults` (`edr_preset`) |
+| component                | version   | where |
+|--------------------------|-----------|-------|
+| Elastic stack            | 8.19.23   | `elastic_stack/defaults` (`elastic_repo_version`, exact apt suite) |
+| Elastic agent (windows)  | 8.19.23   | `elastic_agent_win/defaults` (MSI) |
+| Elastic agent (linux, Fleet Server) | 8.19.23 | `elastic_stack/defaults` (`elastic_agent_linux_version`, tarball) |
+| Integration: system      | 2.6.3     | `elastic_stack/templates/kibana.yml` (pinned, EPR-scoped to Kibana 8.19.23) |
+| Integration: windows     | 3.10.0    | `elastic_stack/templates/kibana.yml` |
+| Integration: endpoint (Elastic Defend) | 8.19.3 | `elastic_stack/templates/kibana.yml` |
+| Integration: fleet_server | 1.6.1    | `elastic_stack/templates/kibana.yml` |
+| Sysmon                   | 14.14     | bundled `sysmon/files/Sysmon.zip` (sha256 `878fa596b2b8f0080c716d1840c0fcf3cebb46ebabe5b169f6cb40bbf81d9aef`) |
+| Sysmon config            | v74       | bundled `sysmon/files/sysmonconfig-export.xml` (latest upstream release) |
+| Defend preset            | EDRComplete | `elastic_stack/defaults` (`edr_preset`) |
+
+Everything is pinned to an exact version: the stack (single-version apt suite),
+both agents, the four Fleet integration packages (from the Elastic Package
+Registry, scoped to the pinned Kibana), and the Sysmon binary (sha256-locked).
+To upgrade, bump `elastic_repo_version`, the two agent versions and the four
+package versions in `kibana.yml` together - see the comments in
+`elastic_stack/defaults/main.yml`.
 
 Sysmon is pinned to 14.x because 15.x dropped Windows Server 2016 support and
 DC03 runs the `win2016-server-x64-template`.
+
+## Coexistence with other extensions
+
+- **Windows-based extensions are covered automatically.** GOAD merges the
+  inventory of every enabled extension (`goad/provisioner/ansible/ansible.py`
+  -> `run_extension`), so hosts added by `ws01` (Win10 workstation) or
+  `exchange` (srv01) land in the merged `[domain]` group - exactly what
+  `[elastic-edr_agents:children] domain` targets. No extra configuration is
+  needed for those machines to receive Sysmon + the Elastic Agent.
+- **Ordering rule.** If `elastic-edr` is installed first and `ws01` /
+  `exchange` (or any other extension adding Windows machines) afterwards,
+  the new machines get no agent until you re-run the extension install:
+  ```
+  instance_id> install_extension elastic-edr
+  ```
+  (or `provision_extension elastic-edr` on an already loaded instance). The
+  re-run is fully idempotent: the Fleet Server, the agent policies, the
+  detection rules and the enrollment tokens are all guarded (service /
+  policy / token presence checks) and only the newcomers get touched.
+- **Conflicts - do not co-install.** This extension conflicts with the
+  `elk` and `wazuh` extensions: they provide overlapping monitoring / EDR
+  stacks, and `elk` additionally installs Sysmon into the same `c:\sysmon`
+  path. Run one or the other, not both.
+- **Linux-based extensions are not a concern.** `guacamole`, `lx01` and any
+  `[linux_domain]` member are never targeted by the agents play, which only
+  covers Windows machines in `[domain]`.
 
 ## License / feature levels
 

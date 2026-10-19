@@ -22,15 +22,24 @@ xpack.fleet.agents.elasticsearch.hosts:
 #   endpoint     -> Elastic Defend engine, attached via the Fleet API (EDRComplete),
 #                   because the EDR engine cannot be preconfigured in kibana.yml
 #   windows      -> Sysmon / PowerShell / Defender winlog, attached via the Fleet API
+#
+# Integration package versions are pinned EXACTLY (reproducible lab). These are
+# the versions the Elastic Package Registry (epr.elastic.co) serves for the
+# pinned Kibana 8.19.23 (EPR scopes its catalog to the Kibana version, so these
+# numbers are stable for this stack). The runtime package-policy tasks resolve
+# their versions from the same registry, so they stay coherent automatically.
+# To upgrade the stack: bump elastic_repo_version, the two agent versions, and
+# these four package versions together (query epr.elastic.co
+# /search?package=<name>&kibana.version=<new> for the new numbers).
 xpack.fleet.packages:
   - name: fleet_server
-    version: latest
+    version: "1.6.1"
   - name: system
-    version: latest
+    version: "2.6.3"
   - name: endpoint
-    version: latest
+    version: "8.19.3"
   - name: windows
-    version: latest
+    version: "3.10.0"
 xpack.fleet.agentPolicies:
   # Dedicated Fleet Server policy (control plane on :8220). The elastic-agent
   # installed on this VM enrolls into it (same shape as BSL / LME / elastic-container).

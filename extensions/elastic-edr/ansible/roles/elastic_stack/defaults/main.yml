@@ -1,8 +1,15 @@
 # elastic-edr extension : stack role defaults
 #
-# Pin the elastic stack version. "8.x" tracks the latest 8.x LTS in the apt repo.
-# You can pin an exact patch (e.g. "8.19.22") for a fully reproducible lab.
-elastic_repo_version: "8.x"
+# Pin the elastic stack to an EXACT version (fully reproducible lab).
+# artifacts.elastic.co serves the pinned version as a single-version apt suite;
+# there is no per-minor suite (packages/8.19/apt is a 404), so pinning means
+# setting the exact version string here. Keep in sync with the two agent pins
+# below / in elastic_agent_win (elastic_agent_version, elastic_agent_linux_version):
+# Elastic requires ES >= Fleet Server >= Elastic Agent, and the integration
+# packages in templates/kibana.yml are resolved against this same Kibana version.
+# To upgrade: bump this value, the two agent versions, and the four integration
+# package versions in templates/kibana.yml together.
+elastic_repo_version: "8.19.23"
 
 # Elasticsearch java heap. Keep under half of the VM RAM (VM ships with 16GB).
 elastic_heap: "6g"

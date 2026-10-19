@@ -44,6 +44,30 @@ ES + Kibana, and the Fleet management UI stays inside Kibana - only the agent
 control plane moves to 8220. The windows machines need 8220 + 9200 open toward
 the ELASTIC-EDR machine.
 
+## Coexistence with other extensions
+
+- **Windows-based extensions are covered automatically.** GOAD merges the
+  inventory of every enabled extension, so hosts added by `ws01` (Win10
+  workstation) or `exchange` (srv01) land in the merged `[domain]` group -
+  exactly what the agents play targets (`[elastic-edr_agents:children]
+  domain`). No extra configuration is needed for those machines to receive
+  Sysmon + the Elastic Agent.
+- **Ordering rule.** If `elastic-edr` is installed first and `ws01` /
+  `exchange` (or any other extension adding Windows machines) afterwards,
+  the new machines get no agent until you re-run the extension install:
+  `install_extension elastic-edr` (or `provision_extension elastic-edr` on
+  an already loaded instance). The re-run is fully idempotent: the Fleet
+  Server, the agent policies, the detection rules and the enrollment tokens
+  are all guarded (service / policy / token presence checks) and only the
+  newcomers get touched.
+- **Conflicts - do not co-install.** This extension conflicts with the `elk`
+  and `wazuh` extensions: they provide overlapping monitoring / EDR stacks,
+  and `elk` additionally installs Sysmon into the same `c:\sysmon` path. Run
+  one or the other, not both.
+- **Linux-based extensions are not a concern.** `guacamole`, `lx01` and any
+  `[linux_domain]` member are never targeted by the agents play, which only
+  covers Windows machines in `[domain]`.
+
 ## License / feature levels
 
 Self managed Kibana defaults to the **Basic** license: the EDR engine, malware
