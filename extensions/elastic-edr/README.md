@@ -43,7 +43,7 @@
       events (8003/8006/8021/8024) for anything executing outside the standard
       OS/application locations - the drop zones where lateral-movement tooling
       lands. Local per-host policy via `Set-AppLockerPolicy`, no GPO needed.
-      The AppIDSvc service is set to automatic so the channels actually emit.
+      AppIDSvc is explicitly configured for automatic startup and started; the task verifies the service state before applying the policy.
     - **host-side logging enablement** (`endpoint_logging` role) - 27 audit
       subcategories enabled (success+failure), the union of the Sigma
       logsource prerequisites and the Palantir WEF baseline:
@@ -55,6 +55,10 @@
       4768/4769), **4662/5136** DS access/changes (DCSync/replication
       hunting), scheduled-task events (**4696-4702**), **1102** audit-log
       cleared, PNP activity, System Integrity (code-integrity/DPAPI crypto).
+      **Important:** auditpol enables DS Access/Changes subcategories but does
+      not configure directory-object SACLs. On DCs the role performs a read-only
+      naming-context-root SACL check; it does not rewrite directory security
+      descriptors. See the AD DS SACL prerequisite section below for 4662/5136.
       The noisy SACL-dependent families (Registry, File Share/5145,
       Privilege Use, MPSSVC, SAM, Handle Manipulation) are deliberately
       left disabled - enable them all later with
@@ -130,13 +134,39 @@ this extension **enables the event types most community detections rely on**:
 
 Already on in stock v74 (kept as-is): 1 (process), 2 (file time), 3 (network),
 5 (terminate), 6 (driver), 8 (remote thread), 11 (file create),
-12/13/14 (registry), 15 (ADS), 16, 19 (WMI), 22 (DNS), 25 (tampering).
+12/13/14 (registry), 15 (ADS), 16, 19 (WMI), 22 (DNS).
+
+Event ID 25 (ProcessTampering) is **not collected by the shipped config**: its
+example RuleGroup remains commented out because this extension has not selected
+and validated a low-noise filter for that event. Do not assume ProcessTampering
+telemetry exists until an operator deliberately enables and validates a rule.
 
 The scoping in each section keeps volume manageable (stock v74's warning about
 event 10 applies only if you open it up to all targets). To tune further, edit
 the XML in the repo and reload on hosts with
 `sysmon64.exe -c c:\sysmon\sysmonconfig-export.xml` (the install role only
 runs the initial `-i` on first install).
+
+
+### AD DS SACL prerequisite (Events 4662 and 5136)
+
+The role enables the Directory Service Access and Directory Service Changes
+audit subcategories, but auditpol alone does not guarantee the expected
+directory events. Event 4662 for replication-control-access hunting depends on
+appropriate success-audit ACEs for the relevant replication rights at the
+domain naming-context root. Event 5136 requires an appropriate SACL on the
+changed directory object or an ancestor whose audit ACE is inherited by it.
+
+During provisioning, the endpoint logging role performs a read-only indicator
+check on domain controllers and reports whether it detects replication-right
+auditing and inheritable WriteProperty auditing on the naming-context root.
+This is not an exhaustive proof for every object: some GOAD variants or
+exercises may place SACLs on specific objects/OUs instead. The role does not
+add, replace, or reset AD security descriptors automatically. Review effective
+SACLs for the exact objects used by your exercise, add only the required
+success-audit ACEs where missing, and preserve existing DACL/SACL entries. If
+the check cannot read the descriptor, treat the result as unknown and inspect
+it manually rather than assuming coverage.
 
 ## Coexistence with other extensions
 

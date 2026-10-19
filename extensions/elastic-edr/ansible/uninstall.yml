@@ -13,7 +13,9 @@
 #     and the AppIDSvc startup change (back to Manual, the Windows default)
 #   - ALL audit subcategories the endpoint_logging role enabled (27 + the 9
 #     extras, disabled again by name)
-#   - the 5 registry values the endpoint_logging role wrote
+#   - endpoint logging registry values restored from the pre-install snapshot
+#     (if no snapshot exists, values are left untouched rather than deleting
+#     settings whose ownership cannot be determined)
 #   - the extension state dir (/etc/elastic-edr) on the ELK-EDR VM
 #
 # What is NOT removed (deliberate - the stack is the lab's control plane and
@@ -124,22 +126,34 @@
       changed_when: false
       failed_when: false
 
-    - name: Remove the PowerShell logging registry values
-      ansible.windows.win_regedit:
-        path: "{{ item.path }}"
-        name: "{{ item.name }}"
+    - name: Restore endpoint logging registry values from the saved snapshot
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $statePath = 'C:\ProgramData\GOAD-Elastic-EDR\endpoint-logging-registry-backup.json'
+        if (-not (Test-Path -LiteralPath $statePath)) {
+          Write-Output 'No saved registry snapshot; leaving values untouched to avoid deleting settings that may predate the extension.'
+          exit 0
+        }
+        $snapshot = @(Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json)
+        foreach ($item in $snapshot) {
+          $key = Get-Item -LiteralPath $item.Path -ErrorAction SilentlyContinue
+          if ([bool]$item.Existed) {
+            if (-not $key) { New-Item -Path $item.Path -Force | Out-Null }
+            New-ItemProperty -Path $item.Path -Name $item.Name -Value $item.Value -PropertyType $item.Kind -Force | Out-Null
+          } elseif ($key -and ($key.GetValueNames() -contains $item.Name)) {
+            Remove-ItemProperty -LiteralPath $item.Path -Name $item.Name -ErrorAction Stop
+          }
+        }
+        Remove-Item -LiteralPath $statePath -Force
+        Write-Output 'Restored endpoint logging registry values to their pre-extension state.'
+      register: endpoint_logging_registry_restore
+      changed_when: (endpoint_logging_registry_restore.stdout | default('')) is search('Restored endpoint')
+      failed_when: endpoint_logging_registry_restore.rc is defined and endpoint_logging_registry_restore.rc != 0
+
+    - name: Remove endpoint logging backup state directory
+      ansible.windows.win_file:
+        path: C:\ProgramData\GOAD-Elastic-EDR
         state: absent
-      loop:
-        - path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit
-          name: ProcessCreationIncludeCmdLine_Enabled
-        - path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ScriptBlockLogging
-          name: EnableScriptBlockLogging
-        - path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ScriptBlockLogging
-          name: EnableScriptBlockInvocationLogging
-        - path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ModuleLogging
-          name: EnableModuleLogging
-        - path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames
-          name: "*"
       changed_when: false
       failed_when: false
 

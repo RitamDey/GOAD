@@ -2,78 +2,65 @@
 <!--
   GOAD elastic-edr extension - AppLocker AUDIT-ONLY policy.
 
-  Purpose: generate high-signal AppLocker telemetry WITHOUT blocking anything
-  (purple-team posture, same philosophy as the Elastic Defend detect-only
-  policy). Every rule collection uses EnforcementMode="AuditOnly", so
-  Windows records Warning-class events (8003/8006/8021/8024/8028: "<file>
-  was allowed to run but would have been prevented") for anything executing
-  OUTSIDE the standard OS/application locations - i.e. the user-writable
-  drop zones where lateral-movement and payload tooling lands - while
-  legitimate software logs as informational 8002/8005/8020/8023.
+  This policy gathers AppLocker audit telemetry without enforcing blocks.
+  Every configured RuleCollection uses EnforcementMode="AuditOnly".
 
-  Rules are the canonical AppLocker default allow-list:
-    - %WINDIR%/*          (Everyone)
-    - %PROGRAMFILES%/*    (Everyone)
-    - * (everything)      for BUILTIN\Administrators
-  for EXE and MSI/Script; the default packaged-app rules for Everyone.
-  Everything else is audited.
+  Coverage is deliberately explicit:
+    - EXE and Script: Everyone may run files under Windows and Program Files;
+      BUILTIN\Administrators may run all files.
+    - MSI: Everyone may run signed installers and installers under the Windows
+      Installer directory; BUILTIN\Administrators may run all installer files.
+    - Appx: Everyone may run signed packaged apps.
+  Other candidates are audited, not blocked. This is a learning-lab signal
+  policy, not an application-control allow-list.
 
-  Removal (documented in the extension README):
-    Set-AppLockerPolicy -XmlPolicy on an empty policy, or delete the
-    local policy with: Set-AppLockerPolicy -PolicyObject (New-AppLockerPolicy -XmlPolicy <empty>) - or simply
-    'Set-AppLockerPolicy -Xml C:\path\empty.xml'. See the extension docs.
+  Removal is handled by the extension uninstall playbook.
 -->
 <AppLockerPolicy Version="1">
   <RuleCollection Type="Exe" EnforcementMode="AuditOnly">
-    <FilePathRule Action="Allow" UserOrGroupSid="S-1-1-0" Name="(Default Rule) All files located in the Windows folder" Description="">
-      <Conditions>
-        <FilePathCondition Path="%WINDIR%\*"/>
-      </Conditions>
+    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E101}" Name="Everyone - Windows folder" Description="Audit-only baseline path allow" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%WINDIR%\*"/></Conditions>
     </FilePathRule>
-    <FilePathRule Action="Allow" UserOrGroupSid="S-1-1-0" Name="(Default Rule) All files located in Program Files" Description="">
-      <Conditions>
-        <FilePathCondition Path="%PROGRAMFILES%\*"/>
-      </Conditions>
+    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E102}" Name="Everyone - Program Files" Description="Audit-only baseline path allow" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%PROGRAMFILES%\*"/></Conditions>
     </FilePathRule>
-    <FilePathRule Action="Allow" UserOrGroupSid="S-1-5-32-544" Name="(Default Rule) All files" Description="">
-      <Conditions>
-        <FilePathCondition Path="*"/>
-      </Conditions>
+    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E103}" Name="Administrators - all executable paths" Description="Default administrator path allow" UserOrGroupSid="S-1-5-32-544" Action="Allow">
+      <Conditions><FilePathCondition Path="*"/></Conditions>
     </FilePathRule>
   </RuleCollection>
   <RuleCollection Type="Msi" EnforcementMode="AuditOnly">
-    <FilePathRule Action="Allow" UserOrGroupSid="S-1-1-0" Name="(Default Rule) All signed installers" Description="">
+    <FilePublisherRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E201}" Name="Everyone - signed installers" Description="Audit-only publisher allow for signed installers" UserOrGroupSid="S-1-1-0" Action="Allow">
       <Conditions>
-        <FilePublisherCondition ProductName="*" BinaryName="*">
-          <PublisherCondition PublisherName="*" ProductName="*" BinaryName="*" LowSection="0.0.0.0" HighSection="*"/>
+        <FilePublisherCondition PublisherName="*" ProductName="*" BinaryName="*">
+          <BinaryVersionRange LowSection="0.0.0.0" HighSection="*"/>
         </FilePublisherCondition>
       </Conditions>
+    </FilePublisherRule>
+    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E202}" Name="Everyone - Windows Installer directory" Description="Default Windows Installer path allow" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%WINDIR%\Installer\*"/></Conditions>
     </FilePathRule>
-    <FilePathRule Action="Allow" UserOrGroupSid="S-1-5-32-544" Name="(Default Rule) All files" Description="">
-      <Conditions>
-        <FilePathCondition Path="*"/>
-      </Conditions>
+    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E203}" Name="Administrators - all installer paths" Description="Default administrator installer allow" UserOrGroupSid="S-1-5-32-544" Action="Allow">
+      <Conditions><FilePathCondition Path="*"/></Conditions>
     </FilePathRule>
   </RuleCollection>
   <RuleCollection Type="Script" EnforcementMode="AuditOnly">
-    <FilePathRule Action="Allow" UserOrGroupSid="S-1-5-32-544" Name="(Default Rule) All scripts" Description="">
-      <Conditions>
-        <FilePathCondition Path="*"/>
-      </Conditions>
+    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E301}" Name="Everyone - Windows scripts" Description="Audit-only baseline path allow" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%WINDIR%\*"/></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E302}" Name="Everyone - Program Files scripts" Description="Audit-only baseline path allow" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%PROGRAMFILES%\*"/></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E303}" Name="Administrators - all script paths" Description="Default administrator script allow" UserOrGroupSid="S-1-5-32-544" Action="Allow">
+      <Conditions><FilePathCondition Path="*"/></Conditions>
     </FilePathRule>
   </RuleCollection>
-  <RuleCollection Type="Packaged app Installation" EnforcementMode="AuditOnly">
-    <PackagedAppRule Action="Allow" UserOrGroupSid="S-1-1-0" Name="(Default Rule) All signed packaged apps" Description="">
+  <RuleCollection Type="Appx" EnforcementMode="AuditOnly">
+    <FilePublisherRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E401}" Name="Everyone - signed packaged apps" Description="Default packaged-app publisher allow" UserOrGroupSid="S-1-1-0" Action="Allow">
       <Conditions>
-        <PublisherCondition PublisherName="*" ProductName="*" BinaryName="*" HighSection="*" LowSection="0.0.0.0"/>
+        <FilePublisherCondition PublisherName="*" ProductName="*" BinaryName="*">
+          <BinaryVersionRange LowSection="0.0.0.0" HighSection="*"/>
+        </FilePublisherCondition>
       </Conditions>
-    </PackagedAppRule>
-  </RuleCollection>
-  <RuleCollection Type="Packaged app Execution" EnforcementMode="AuditOnly">
-    <PackagedAppRule Action="Allow" UserOrGroupSid="S-1-1-0" Name="(Default Rule) All signed packaged apps" Description="">
-      <Conditions>
-        <PublisherCondition PublisherName="*" ProductName="*" BinaryName="*" HighSection="*" LowSection="0.0.0.0"/>
-      </Conditions>
-    </PackagedAppRule>
+    </FilePublisherRule>
   </RuleCollection>
 </AppLockerPolicy>

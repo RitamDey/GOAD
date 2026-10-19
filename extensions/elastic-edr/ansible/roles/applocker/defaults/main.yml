@@ -9,10 +9,9 @@
 # windows.applocker_* data streams already enabled on the agent policy.
 #
 # This is local (per-host) policy via Set-AppLockerPolicy - no GPO or domain
-# dependency, idempotent on re-runs. The AppIDSvc service is set to automatic
-# first: it is trigger-started by default and the AppLocker channels only
-# produce events while it runs (event 8008 = "component not available" when
-# it does not).
+# dependency, idempotent on re-runs. AppIDSvc is explicitly configured
+# for automatic startup and started before policy application. Its current
+# state is checked rather than relying on trigger-start behavior.
 
 applocker_policy_file: applocker-audit.xml
 applocker_install_location: "c:\\applocker"

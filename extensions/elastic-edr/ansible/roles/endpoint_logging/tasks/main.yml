@@ -13,6 +13,68 @@
 # idempotent: auditpol re-runs are declarative, registry writes use
 # win_regedit with explicit values.
 
+
+# Snapshot the original values once so uninstall can restore pre-existing
+# settings rather than blindly deleting registry values configured by an
+# administrator before this extension was installed.
+- name: Preserve original endpoint logging registry values for uninstall
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $statePath = 'C:\ProgramData\GOAD-Elastic-EDR\endpoint-logging-registry-backup.json'
+    if (Test-Path -LiteralPath $statePath) {
+      Write-Output 'Original endpoint logging registry snapshot already exists; preserving it.'
+      exit 0
+    }
+    New-Item -ItemType Directory -Path (Split-Path -Parent $statePath) -Force | Out-Null
+    $specs = @(
+      @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'; Name = 'ProcessCreationIncludeCmdLine_Enabled' },
+      @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'; Name = 'EnableScriptBlockLogging' },
+      @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'; Name = 'EnableScriptBlockInvocationLogging' },
+      @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging'; Name = 'EnableModuleLogging' },
+      @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames'; Name = '*' },
+      @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ScriptBlockLogging'; Name = 'EnableScriptBlockLogging' },
+      @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ScriptBlockLogging'; Name = 'EnableScriptBlockInvocationLogging' },
+      @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ModuleLogging'; Name = 'EnableModuleLogging' },
+      @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames'; Name = '*' }
+    )
+    $snapshot = foreach ($spec in $specs) {
+      $key = Get-Item -LiteralPath $spec.Path -ErrorAction SilentlyContinue
+      $exists = $null -ne $key -and ($key.GetValueNames() -contains $spec.Name)
+      if ($exists) {
+        [pscustomobject]@{
+          Path = $spec.Path
+          Name = $spec.Name
+          Existed = $true
+          Kind = $key.GetValueKind($spec.Name).ToString()
+          Value = $key.GetValue($spec.Name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        }
+      } else {
+        [pscustomobject]@{ Path = $spec.Path; Name = $spec.Name; Existed = $false; Kind = $null; Value = $null }
+      }
+    }
+    ConvertTo-Json -InputObject @($snapshot) -Depth 10 |
+      Set-Content -LiteralPath $statePath -Encoding UTF8
+    Write-Output 'Saved original endpoint logging registry values.'
+  register: endpoint_logging_registry_backup
+  changed_when: (endpoint_logging_registry_backup.stdout | default('')) is search('Saved original')
+
+# Clean up the old non-policy values used by earlier extension revisions only
+# after their initial state has been preserved above.
+- name: Remove legacy non-policy PowerShell logging values
+  ansible.windows.win_regedit:
+    path: "{{ item.path }}"
+    name: "{{ item.name }}"
+    state: absent
+  loop:
+    - path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ScriptBlockLogging
+      name: EnableScriptBlockLogging
+    - path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ScriptBlockLogging
+      name: EnableScriptBlockInvocationLogging
+    - path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ModuleLogging
+      name: EnableModuleLogging
+    - path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames
+      name: "*"
+
 # auditpol /set is declarative-idempotent (re-asserting the same state is a
 # no-op on Windows), so these report ok: on re-runs instead of fake "changed".
 - name: Enable the security audit subcategories (Sigma logsource baseline)
@@ -46,7 +108,7 @@
 # PowerShell telemetry for detecting encoded/obfuscated payload execution.
 - name: Enable PowerShell script block logging (4104)
   ansible.windows.win_regedit:
-    path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ScriptBlockLogging
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging
     name: EnableScriptBlockLogging
     data: 1
     type: dword
@@ -54,7 +116,7 @@
 
 - name: Enable PowerShell script block invocation logging
   ansible.windows.win_regedit:
-    path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ScriptBlockLogging
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging
     name: EnableScriptBlockInvocationLogging
     data: 1
     type: dword
@@ -64,7 +126,7 @@
 # stream carries module-level pipeline execution events deterministically.
 - name: Enable PowerShell module logging (4103)
   ansible.windows.win_regedit:
-    path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ModuleLogging
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging
     name: EnableModuleLogging
     data: 1
     type: dword
@@ -72,7 +134,7 @@
 
 - name: Set PowerShell module logging module names
   ansible.windows.win_regedit:
-    path: HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames
     name: "*"
     data: "*"
     type: string
@@ -88,8 +150,67 @@
     auditpol /get /category:"DS Access" | Out-String
     auditpol /get /category:"System" | Out-String
     Write-Output '--- script block logging ---'
-    Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ScriptBlockLogging' |
+    Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' |
       Select-Object EnableScriptBlockLogging | Format-List | Out-String
   register: logging_state
   changed_when: false
   failed_when: false
+
+
+# auditpol enables DS Access/Changes subcategories but does not create
+# directory-object SACLs. This read-only check is an indicator on DCs, not a
+# claim that all objects are covered; some GOAD exercises use object-specific
+# audit ACEs. Do not rewrite the naming-context security descriptor wholesale.
+- name: Inspect AD DS SACL prerequisites on domain controllers (read-only)
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    try {
+      $domainRole = (Get-CimInstance -ClassName Win32_ComputerSystem).DomainRole
+      if ($domainRole -notin @(4, 5)) {
+        Write-Output 'ad_ds_sacl=not_applicable'
+        exit 0
+      }
+      $rootDse = [ADSI]'LDAP://RootDSE'
+      $namingContext = [string]$rootDse.Properties['defaultNamingContext'][0]
+      if ([string]::IsNullOrWhiteSpace($namingContext)) { throw 'RootDSE did not return defaultNamingContext.' }
+      $directoryRoot = [ADSI]("LDAP://" + $namingContext)
+      $rules = @($directoryRoot.psbase.ObjectSecurity.GetAuditRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+      $replicationRights = @(
+        [guid]'1131f6aa-9c07-11d1-f79f-00c04fc2dcd2',
+        [guid]'1131f6ad-9c07-11d1-f79f-00c04fc2dcd2',
+        [guid]'89e95b76-444d-4c62-991a-0facbeda640c'
+      )
+      $replicationAudited = @($rules | Where-Object {
+        $_.AuditFlags.HasFlag([System.Security.AccessControl.AuditFlags]::Success) -and
+        $_.ActiveDirectoryRights.HasFlag([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight) -and
+        ($replicationRights -contains $_.ObjectType)
+      }).Count -gt 0
+      $writePropertyInherited = @($rules | Where-Object {
+        $_.AuditFlags.HasFlag([System.Security.AccessControl.AuditFlags]::Success) -and
+        $_.ActiveDirectoryRights.HasFlag([System.DirectoryServices.ActiveDirectoryRights]::WriteProperty) -and
+        $_.InheritanceType -ne [System.DirectoryServices.ActiveDirectorySecurityInheritance]::None
+      }).Count -gt 0
+      Write-Output ("ad_ds_naming_context=" + $namingContext)
+      Write-Output ("ad_ds_sacl_replication_control_access=" + $(if ($replicationAudited) { 'present' } else { 'not_detected' }))
+      Write-Output ("ad_ds_sacl_inherited_write_property=" + $(if ($writePropertyInherited) { 'present' } else { 'not_detected' }))
+      if (-not $replicationAudited -or -not $writePropertyInherited) {
+        Write-Output 'ad_ds_sacl_guidance=Review the naming-context root and the specific objects/OUs used by your exercises. Auditpol alone does not guarantee 4662/5136.'
+      }
+    } catch {
+      Write-Output ("ad_ds_sacl=check_failed: " + $_.Exception.Message)
+    }
+  register: ad_ds_sacl_prerequisite_check
+  changed_when: false
+  failed_when: false
+
+- name: Report AD DS SACL prerequisite findings
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: {{ ad_ds_sacl_prerequisite_check.stdout | default('') | trim }}.
+      This is a read-only diagnostic. Review effective SACLs and add only the
+      required success-audit ACEs if your chosen AD exercises need 4662/5136;
+      do not replace existing security descriptors.
+  when:
+    - ad_ds_sacl_prerequisite_check.stdout is defined
+    - "'not_applicable' not in ad_ds_sacl_prerequisite_check.stdout"
+    - "'present' not in ad_ds_sacl_prerequisite_check.stdout or 'not_detected' in ad_ds_sacl_prerequisite_check.stdout or 'check_failed' in ad_ds_sacl_prerequisite_check.stdout"

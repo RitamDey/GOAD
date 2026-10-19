@@ -90,7 +90,7 @@
 			<CommandLine condition="is">C:\Windows\system32\wermgr.exe -upload</CommandLine> <!--Windows:Windows error reporting/telemetry-->
 			<CommandLine condition="is">C:\Windows\system32\SearchIndexer.exe /Embedding</CommandLine> <!--Windows: Search Indexer-->
 			<CommandLine condition="is">C:\windows\system32\wermgr.exe -queuereporting</CommandLine> <!--Windows:Windows error reporting/telemetry-->
-			<CommandLine condition="is">\??\C:\Windows\system32\autochk.exe *</CommandLine> <!--Microsoft:Bootup: Auto Check Utility-->
+			<CommandLine condition="begin with">\??\C:\Windows\system32\autochk.exe </CommandLine> <!--Microsoft:Bootup: Auto Check Utility; match executable plus argument separator without glob syntax-->
 			<CommandLine condition="is">\SystemRoot\System32\smss.exe</CommandLine> <!--Microsoft:Bootup: Windows Session Manager-->
 			<CommandLine condition="is">C:\Windows\System32\RuntimeBroker.exe -Embedding</CommandLine> <!--Windows:Apps permissions [ https://fossbytes.com/runtime-broker-process-windows-10/ ] -->
 			<Image condition="is">C:\Program Files (x86)\Common Files\microsoft shared\ink\TabTip32.exe</Image> <!--Windows: Touch Keyboard and Handwriting Panel Helper-->
@@ -468,11 +468,11 @@
 			<TargetImage condition="is">C:\Windows\system32\lsass.exe</TargetImage>
 			<TargetImage condition="is">C:\Windows\syswow64\lsass.exe</TargetImage>
 			<TargetImage condition="is">C:\Windows\system32\winlogon.exe</TargetImage>
-			<TargetImage condition="ends with">MsMpEng.exe</TargetImage>
-			<SourceImage condition="ends with">procdump64.exe</SourceImage>
-			<SourceImage condition="ends with">procdump.exe</SourceImage>
-			<SourceImage condition="ends with">Taskmgr.exe</SourceImage>
-			<SourceImage condition="ends with">ProcessHacker.exe</SourceImage>
+			<TargetImage condition="end with">MsMpEng.exe</TargetImage>
+			<SourceImage condition="end with">procdump64.exe</SourceImage>
+			<SourceImage condition="end with">procdump.exe</SourceImage>
+			<SourceImage condition="end with">Taskmgr.exe</SourceImage>
+			<SourceImage condition="end with">ProcessHacker.exe</SourceImage>
 			<GrantedAccess condition="is">0x1010</GrantedAccess>
 			<GrantedAccess condition="is">0x143a</GrantedAccess>
 			<GrantedAccess condition="is">0x1410</GrantedAccess>
@@ -631,7 +631,17 @@
 			<TargetObject name="T1158" condition="end with">\ShowSuperHidden</TargetObject> <!--Windows:Explorer: Some types of malware try to hide their hidden system files from the user, good signal event [ Example: https://www.symantec.com/security_response/writeup.jsp?docid=2007-061811-4341-99&tabid=2 ] -->
 			<TargetObject name="T1158" condition="end with">\HideFileExt</TargetObject> <!--Windows:Explorer: Some malware hides file extensions to make diagnosis/disinfection more daunting to novice users -->
 			<!--Windows shell hijack and modifications-->
-			<TargetObject condition="contains">Classes\*\</TargetObject> <!--Windows:Explorer: [ http://www.silentrunners.org/launchpoints.html ] -->
+			<!-- Explicit class/file-association subtrees. Sysmon conditions are literal:
+			     do not use '*' as a glob or imply coverage of every Classes descendant. -->
+			<TargetObject name="T1042" condition="contains">Classes\CLSID\</TargetObject> <!-- COM class registrations -->
+			<TargetObject name="T1042" condition="contains">Classes\exefile\</TargetObject> <!-- Executable handler -->
+			<TargetObject name="T1042" condition="contains">Classes\batfile\</TargetObject> <!-- Batch-file handler -->
+			<TargetObject name="T1042" condition="contains">Classes\cmdfile\</TargetObject> <!-- Command-file handler -->
+			<TargetObject name="T1042" condition="contains">Classes\ps1file\</TargetObject> <!-- PowerShell-file handler -->
+			<TargetObject name="T1042" condition="contains">Classes\.exe\</TargetObject> <!-- Executable file association -->
+			<TargetObject name="T1042" condition="contains">Classes\.bat\</TargetObject> <!-- Batch-file association -->
+			<TargetObject name="T1042" condition="contains">Classes\.cmd\</TargetObject> <!-- Command-file association -->
+			<TargetObject name="T1042" condition="contains">Classes\.ps1\</TargetObject> <!-- PowerShell-file association -->
 			<TargetObject condition="contains">Classes\AllFilesystemObjects\</TargetObject> <!--Windows:Explorer: [ http://www.silentrunners.org/launchpoints.html ] -->
 			<TargetObject condition="contains">Classes\Directory\</TargetObject> <!--Windows:Explorer: [ https://stackoverflow.com/questions/1323663/windows-shell-context-menu-option ] -->
 			<TargetObject condition="contains">Classes\Drive\</TargetObject> <!--Windows:Explorer: [ https://stackoverflow.com/questions/1323663/windows-shell-context-menu-option ] -->

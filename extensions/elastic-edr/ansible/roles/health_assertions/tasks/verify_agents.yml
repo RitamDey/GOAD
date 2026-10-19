@@ -35,7 +35,7 @@
 - name: Verify host-side logging took effect (4688 audit + 4104 script block)
   ansible.windows.win_shell: |
     $audit = (auditpol /get /subcategory:"Process Creation") -join ' '
-    $sb = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ScriptBlockLogging' -ErrorAction SilentlyContinue).EnableScriptBlockLogging
+    $sb = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -ErrorAction SilentlyContinue).EnableScriptBlockLogging
     Write-Output ("audit_process_creation=" + ($audit -match 'Success'))
     Write-Output ("scriptblock_logging=" + [int]($sb -eq 1))
   register: logging_verify

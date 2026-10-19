@@ -13,13 +13,49 @@
     src: "{{ applocker_policy_file }}"
     dest: "{{ applocker_install_location }}\\{{ applocker_policy_file }}"
 
-# AppIDSvc (Application Identity) must be running for AppLocker to evaluate
-# and log anything; default is trigger-start, force automatic for a lab.
-# Declarative/idempotent: always safe to re-assert, so changed_when: false.
-- name: Set AppIDSvc to automatic (required for AppLocker eventing)
-  ansible.windows.win_shell: Set-Service -Name AppIDSvc -StartupType Automatic
-  register: appidsvc_result
+# Validate the policy's collection types, rule identifiers and audit-only
+# posture before asking Windows to import it.
+- name: Validate the shipped AppLocker XML before applying it
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    try {
+      [xml]$policy = Get-Content -LiteralPath "{{ applocker_install_location }}\{{ applocker_policy_file }}" -Raw
+      if ($policy.AppLockerPolicy.Version -ne '1') { throw 'Expected AppLockerPolicy Version=1.' }
+      foreach ($type in @('Exe', 'Msi', 'Script', 'Appx')) {
+        $collections = @($policy.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq $type })
+        if ($collections.Count -ne 1) { throw "Expected exactly one $type RuleCollection." }
+        if ($collections[0].EnforcementMode -ne 'AuditOnly') { throw "$type collection is not AuditOnly." }
+      }
+      if ($policy.SelectNodes('//RuleCollection[@Type="Msi"]/FilePathRule/Conditions/FilePublisherCondition').Count -gt 0) {
+        throw 'FilePublisherCondition must be nested under FilePublisherRule.'
+      }
+      if ($policy.SelectNodes('//PackagedAppRule').Count -gt 0) {
+        throw 'Packaged apps must use the Appx collection and FilePublisherRule representation.'
+      }
+      $rules = @($policy.SelectNodes('/AppLockerPolicy/RuleCollection/*'))
+      if ($rules.Count -eq 0) { throw 'The policy contains no rules.' }
+      foreach ($rule in $rules) {
+        if ([string]::IsNullOrWhiteSpace($rule.GetAttribute('Id'))) { throw "Rule '$($rule.Name)' has no Id." }
+        [void][guid]::Parse($rule.GetAttribute('Id').Trim('{}'))
+      }
+      Write-Output 'AppLocker XML structure valid; Exe/Msi/Script/Appx remain AuditOnly.'
+    } catch {
+      Write-Error "AppLocker policy validation failed: $($_.Exception.Message)"
+      exit 1
+    }
+  register: applocker_xml_validate
   changed_when: false
+  failed_when: applocker_xml_validate.rc is defined and applocker_xml_validate.rc != 0
+
+# Startup mode alone does not start a stopped service. Start it explicitly and
+# fail visibly before policy application if the service cannot reach Started.
+- name: Configure and start AppIDSvc for AppLocker eventing
+  ansible.windows.win_service:
+    name: AppIDSvc
+    start_mode: auto
+    state: started
+  register: appidsvc_result
+  failed_when: appidsvc_result.state is defined and appidsvc_result.state != 'started'
 
 # Apply the policy only when the effective policy XML differs from the file
 # we ship - a real change report, not unconditional changed=true. Captures
@@ -32,7 +68,7 @@
     [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($p))).Replace('-','')
   register: applocker_hash_before
   changed_when: false
-  failed_when: false
+  failed_when: applocker_hash_before.rc is defined and (applocker_hash_before.rc != 0 or (applocker_hash_before.stdout | default('') | trim) == '')
 
 - name: Apply the AppLocker audit-only policy (local policy)
   ansible.windows.win_shell: >-
@@ -48,13 +84,27 @@
     [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($p))).Replace('-','')
   register: applocker_hash_after
   changed_when: false
-  failed_when: false
+  failed_when: applocker_hash_after.rc is defined and (applocker_hash_after.rc != 0 or (applocker_hash_after.stdout | default('') | trim) == '')
 
-- name: Verify the AppLocker policy is active (audit mode)
+- name: Verify the effective AppLocker collections are active in audit mode
   ansible.windows.win_shell: |
-    $p = Get-AppLockerPolicy -Effective -Xml
-    if ($p -notmatch 'AuditOnly') { Write-Error 'AppLocker audit policy not active'; exit 1 }
-    Write-Output 'AppLocker audit-only policy active'
+    $ErrorActionPreference = 'Stop'
+    try {
+      [xml]$policy = Get-AppLockerPolicy -Effective -Xml
+      $bad = @()
+      foreach ($type in @('Exe', 'Msi', 'Script', 'Appx')) {
+        $collections = @($policy.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq $type })
+        if ($collections.Count -ne 1 -or $collections[0].EnforcementMode -ne 'AuditOnly') { $bad += $type }
+      }
+      if ($bad.Count -gt 0) { throw "Missing or non-AuditOnly collection(s): $($bad -join ', ')." }
+      if ($policy.SelectNodes('//RuleCollection[@Type="Appx"]/FilePublisherRule').Count -lt 1) {
+        throw 'The effective Appx collection has no FilePublisherRule.'
+      }
+      Write-Output 'Effective AppLocker Exe/Msi/Script/Appx collections are AuditOnly.'
+    } catch {
+      Write-Error "Effective AppLocker policy verification failed: $($_.Exception.Message)"
+      exit 1
+    }
   register: applocker_verify
   changed_when: false
-  failed_when: false
+  failed_when: applocker_verify.rc is defined and applocker_verify.rc != 0
