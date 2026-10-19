@@ -368,28 +368,10 @@
   delay: 5
   changed_when: false
 
-- name: Bind logs-*/metrics-* indices to the ILM policy (index template)
-  ansible.builtin.uri:
-    url: "http://localhost:{{ es_http_port }}/_index_template/goad-edr-logs"
-    method: PUT
-    user: "elastic"
-    password: "{{ elastic_password }}"
-    headers:
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      index_patterns:
-        - "logs-*"
-        - "metrics-*"
-      priority: 200
-      template:
-        settings:
-          index.lifecycle.name: goad-edr-logs
-  register: es_ilm_template
-  until: es_ilm_template.status == 200
-  retries: 5
-  delay: 5
-  changed_when: false
+# Do not create a broad logs-*/metrics-* index template here. Fleet-owned
+# integration templates carry their mappings, pipelines and data-stream setup.
+# The ILM policy is attached through the logs@custom / metrics@custom component
+# templates after Fleet integrations have installed those customization hooks.
 
 - name: Init Fleet setup (creates indices / default output scaffolding)
   ansible.builtin.uri:
@@ -812,6 +794,88 @@
     - endpoint_policy_name not in pp_names
     - endpoint_policy is defined
     - endpoint_policy.status not in [200, 409]
+
+# Use Fleet's custom component-template hooks rather than a generic index template
+# that competes with integration-managed templates. Preserve any existing custom
+# settings/mappings/metadata when adding the lifecycle setting.
+- name: Fetch existing logs custom component template
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/_component_template/logs@custom"
+    method: GET
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    status_code: [200, 404]
+    return_content: yes
+  register: es_logs_custom_existing
+
+- name: Fetch existing metrics custom component template
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/_component_template/metrics@custom"
+    method: GET
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    status_code: [200, 404]
+    return_content: yes
+  register: es_metrics_custom_existing
+
+- name: Preserve existing logs custom component template content
+  ansible.builtin.set_fact:
+    es_logs_custom_body: "{{ (es_logs_custom_existing.json.component_templates | default([]) | first | default({})).component_template | default({}) }}"
+
+- name: Preserve existing metrics custom component template content
+  ansible.builtin.set_fact:
+    es_metrics_custom_body: "{{ (es_metrics_custom_existing.json.component_templates | default([]) | first | default({})).component_template | default({}) }}"
+
+- name: Add ILM settings to the logs custom component template
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/_component_template/logs@custom"
+    method: PUT
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body: "{{ es_logs_custom_body | combine({'template': (es_logs_custom_body.get('template', {}) | combine({'settings': (es_logs_custom_body.get('template', {}).get('settings', {}) | combine({'index.lifecycle.name': 'goad-edr-logs'}, recursive=True))}, recursive=True))}, recursive=True) | to_json }}"
+  register: es_logs_custom_put
+  until: es_logs_custom_put.status == 200
+  retries: 5
+  delay: 5
+  changed_when: false
+
+- name: Add ILM settings to the metrics custom component template
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/_component_template/metrics@custom"
+    method: PUT
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body: "{{ es_metrics_custom_body | combine({'template': (es_metrics_custom_body.get('template', {}) | combine({'settings': (es_metrics_custom_body.get('template', {}).get('settings', {}) | combine({'index.lifecycle.name': 'goad-edr-logs'}, recursive=True))}, recursive=True))}, recursive=True) | to_json }}"
+  register: es_metrics_custom_put
+  until: es_metrics_custom_put.status == 200
+  retries: 5
+  delay: 5
+  changed_when: false
+
+# Apply the policy to already-created data streams/backing indices as well;
+# component-template changes alone only affect future backing indices.
+- name: Apply ILM to existing logs and metrics data streams
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/logs-*,metrics-*/_settings?allow_no_indices=true&ignore_unavailable=true&expand_wildcards=all"
+    method: PUT
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      index.lifecycle.name: goad-edr-logs
+    status_code: [200, 404]
+    return_content: yes
+  register: es_ilm_existing_settings
+  failed_when: es_ilm_existing_settings.status not in [200, 404]
+  changed_when: false
 
 # Flip the Defend engine to DETECT-ONLY mode. The EDRComplete preset defaults the
 # protections to PREVENT, which would block test payloads (EICAR / ransomware

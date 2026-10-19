@@ -37,22 +37,35 @@
 
 - name: Install and enroll Elastic Agent into Fleet (MSI)
   win_shell: >-
-    "{{ elastic_agent_install_location }}\elastic-agent-{{ elastic_agent_version }}-windows-x86_64.msi"
-    --% INSTALLARGS="--url={{ elastic_agent_fleet_url }} --enrollment-token={{ edr_enrollment_token }} --insecure"
-  when: not ea_service.exists
+    msiexec.exe /i "{{ elastic_agent_install_location }}\elastic-agent-{{ elastic_agent_version }}-windows-x86_64.msi"
+    /qn /norestart
+    /l*v "{{ elastic_agent_install_location }}\elastic-agent-install.log"
+    INSTALLARGS="--url={{ elastic_agent_fleet_url }} --enrollment-token={{ edr_enrollment_token }} --insecure"
+  when: not (ea_service.exists | default(false) | bool)
   register: ea_msi
-  failed_when: ea_msi.rc not in [0, 3010]
-  changed_when: true
+  failed_when: false
+  changed_when: ea_msi.rc in [0, 1641, 3010]
+
+- name: Fail with installer details if Elastic Agent MSI failed
+  ansible.builtin.fail:
+    msg: >-
+      Elastic Agent MSI failed with exit code {{ ea_msi.rc | default('unknown') }}.
+      Inspect {{ elastic_agent_install_location }}\elastic-agent-install.log
+      for Windows Installer details.
+  when:
+    - not (ea_service.exists | default(false) | bool)
+    - ea_msi.rc not in [0, 1641, 3010]
 
 - name: Ensure Elastic Agent service is running
   win_service:
     name: elastic-agent
     state: started
     start_mode: auto
+  register: ea_service_started
 
 - name: Show agent status
   win_shell: |
     & "C:\Program Files\Elastic\Agent\{{ elastic_agent_version }}\agent\elastic-agent.exe" status
   register: ea_status
   changed_when: false
-  failed_when: false
+  failed_when: ea_status.rc != 0

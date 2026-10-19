@@ -110,21 +110,16 @@
   block:
     - name: Poll Elasticsearch until the first docs land in logs-*/metrics-*
       ansible.builtin.uri:
-        url: "http://localhost:{{ es_http_port }}/_count"
+        url: "http://localhost:{{ es_http_port }}/logs-*,metrics-*/_count?allow_no_indices=true&ignore_unavailable=true&expand_wildcards=all"
         method: GET
         user: "elastic"
         password: "{{ elastic_password }}"
         headers:
           Content-Type: "application/json"
-        body_format: json
-        body:
-          query:
-            bool:
-              should:
-                - index_prefix: { value: "logs-" }
-                - index_prefix: { value: "metrics-" }
-      return_content: yes
+        return_content: yes
+        status_code: 200
       register: es_data_count
+      failed_when: es_data_count.status is defined and es_data_count.status != 200
       until: >-
         es_data_count.status == 200 and
         es_data_count.json.count | default(0) | int > 0
@@ -132,14 +127,18 @@
       delay: 10
       timeout: 30
 
+
   rescue:
     - name: Fail if no event data reached Elasticsearch (with diagnosis)
       ansible.builtin.fail:
         msg: >-
-          No documents found in logs-*/metrics-* after
-          {{ health_assertions_data_retries }} x 10s. The Fleet Server agent is
-          online but its data is not reaching Elasticsearch - check the Fleet
-          default output ({{ es_output_url | default('http://' ~ hostvars[inventory_hostname].ansible_host ~ ':' ~ es_http_port) }})
+          Elasticsearch's logs-*/metrics-* ingestion probe failed or returned
+          no data after {{ health_assertions_data_retries }} attempts.
+          HTTP status: {{ es_data_count.status | default('unavailable') }}.
+          Elasticsearch response: {{ es_data_count.json.error | default(es_data_count.msg | default('no response body')) }}.
+          If the HTTP status is 200 and count is zero, the Fleet Server agent is
+          online but data has not reached Elasticsearch; check the Fleet default
+          output ({{ es_output_url | default('http://' ~ hostvars[inventory_hostname].ansible_host ~ ':' ~ es_http_port) }})
           and the agent logs at /opt/Elastic/elastic-agent.
 
 # ---- 4. One-screen summary ----------------------------------------------------

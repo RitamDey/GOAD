@@ -290,15 +290,21 @@ The lab ingests several GB/day (Sysmon 10/17/18/23/7/9 + full winlog +
 Without expiry, Elasticsearch hits its flood watermark within weeks and turns
 the cluster READ-ONLY - the lab dies mid-hunt with a cryptic error. The
 install ships a minimal ILM policy (`goad-edr-logs`, delete phase) bound to
-`logs-*` and `metrics-*` via an index template.
+Fleet-managed log and metric data streams through the `logs@custom` and
+`metrics@custom` component-template hooks. It avoids a competing generic
+index template, preserves existing custom-template content, and applies the
+setting to already-created streams as well as future backing indices.
 
 - Default window: **60 days** (`elastic_ilm_retention_days` in
   `elastic_stack/defaults/main.yml`)
 - Disk math for the default: at ~1GB/day you hold ~60GB of indices - tight on
   80GB with the stack itself. Measure real growth after a few days
   (`GET _cat/indices?v&s=store.size:desc`) and tighten to 30-45d if needed.
-- Change `elastic_ilm_retention_days` and re-provision: both PUTs are
-  idempotent and re-apply the policy.
+- Change `elastic_ilm_retention_days` and re-provision to update the policy.
+  The role also updates the Fleet custom component-template hooks and applies
+  the policy to existing data streams/backing indices. The default of 60 days
+  remains a sizing estimate, not a measured recommendation; record real
+  store-size and filesystem growth before deciding whether to tighten it.
 
 ## prerequisites
 
