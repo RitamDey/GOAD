@@ -25,6 +25,10 @@
       PowerShell (`powershell` + `powershell_operational`), Defender
       (`windows_defender`), AppLocker (4 streams), forwarded events + the
       windows metrics (perfmon / service)
+      (note: `windows.forwarded` stays EMPTY unless you stand up a WEF
+      collector / Windows Event Subscription on the domain - the stream is
+      kept enabled on purpose for the collect-everything philosophy; wire a
+      subscription to `ForwardedEvents` and it starts filling)
 - **Enables the Detection Engine and installs + enables the prepackaged SIEM
   detection rules** (enable index -> install prepackaged -> bulk-enable Windows
   rules) - otherwise the engine collects events but fires no alerts
@@ -182,12 +186,44 @@ re-running `provision_extension elastic-edr`:
 - solo -> enabled: bulk-enables all prepackaged rules (e.g. after building
   your own rules, turn the vendor rules on and re-attack to compare)
 
+Scope of the bulk actions: they match `alert.attributes.params.immutable: true`
+- exactly the prepackaged (Elastic-managed) rule corpus, every platform. On
+first-run enable that means the WHOLE corpus ships enabled, not just
+Windows-relevant rules: Linux/macOS/cloud/ML-class rules come up too (ML rules
+auto-skip on the Basic license). They sit enabled-but-dormant on this
+Windows-only lab - harmless, and symmetric with the disable path, which also
+sweeps the whole corpus. Prune them in the UI if you want a shorter rules list.
+
 Between provisions your per-rule enable/disable toggles from the Kibana UI
-(Security -> Rules) are preserved - the posture change only runs when the flag
-itself changes vs the stored state. You can also toggle rules per-rule in the
+(Security -> Rules) are preserved for UNCHANGED-flag re-runs - the posture
+change only runs when the flag itself changes vs the stored state, and it
+only ever touches prepackaged rules (your hand-authored rules are never
+enabled/disabled by a flip). You can also toggle rules per-rule in the
 UI at any time without touching the extension. Deleting the state file
 (`{{ state_dir }}/prepackaged-rules-state` on the ELASTIC-EDR machine)
 re-applies the configured posture on the next run.
+
+## What GOAD core does to your specimen (read before writing detections)
+
+This is an observation lab: the hosts you attack are also hosts GOAD core has
+hardened. Know what was done to the specimen, or you will misattribute
+telemetry gaps to your rules:
+
+- **Defender realtime is OFF only on SRV02.** Core's `ansible/security.yml`
+  runs `settings/windows_defender` per group: `[defender_on]` (DC01, DC02,
+  DC03, SRV03) keep realtime protection ON; `[defender_off]` (SRV02) gets
+  `Set-MpPreference -DisableRealtimeMonitoring $true`. So the
+  `windows.windows_defender` stream watches a hobbled engine on SRV02 and a
+  live one elsewhere - SRV02 is the EDR-only comparison host by design.
+- **ASR (Attack Surface Reduction) rules are enforced core-wide**
+  (`ansible/roles/security/asr`). Some tradecraft will be silently blocked or
+  deformed by ASR before your detection ever sees it - a "no alert" may be an
+  ASR kill, not a rule gap.
+- **RunAsPPL=1 is set core-wide** (`ansible/roles/security/enable_run_as_ppl`).
+  LSASS runs as protected process light: Sysmon Event 10 OpenProcess access
+  masks against lsass (and the EDR's credential-access events) are shaped by
+  which handles PPL grants - expect truncated access masks rather than
+  full-handle reads from vanilla mimikatz-class tools.
 
 ## Credentials (this is a lab)
 

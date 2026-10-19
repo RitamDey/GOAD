@@ -26,3 +26,11 @@ instance_id> install_extension elk
 ## Uninstall
 
 - Not implemented yet
+
+## Coexistence note
+
+The `elastic-edr` extension also installs Sysmon on the domain machines,
+into the same `c:\sysmon` path (config reloaded from its own bundled file).
+Do not enable `elk` and `elastic-edr` on the same instance: the two Sysmon
+installations would clobber each other's configuration and double the
+endpoint event volume.

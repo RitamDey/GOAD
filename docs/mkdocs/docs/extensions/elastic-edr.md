@@ -42,7 +42,10 @@ install Sysmon).
 - The agent policy carries : `system`, Elastic Defend (`endpoint`, EDRComplete)
   and the `windows` integration with the `sysmon_operational`, `powershell`,
   `powershell_operational`, `windows_defender`, `applocker_*` and `forwarded`
-  winlog streams (host resource metrics are intentionally disabled)
+  winlog streams (host resource metrics are intentionally disabled; the
+  `forwarded` stream stays empty unless you stand up a WEF collector /
+  Windows Event Subscription - kept enabled on purpose for the
+  collect-everything philosophy)
 
 Sysmon is pinned to 14.x because 15.x dropped Windows Server 2016 support
 (DC03 runs the 2016 template).
@@ -134,6 +137,35 @@ bulk-enables them - e.g. after building your own rules, turn the vendor rules
 on and re-attack to compare). Per-rule UI toggles (Security -> Rules) are
 preserved between provisions; the posture change only runs when the flag
 changes vs the stored state.
+
+Scope of the bulk actions: they match `alert.attributes.params.immutable:
+true` - exactly the prepackaged (Elastic-managed) corpus, every platform. A
+first-run enable therefore brings up the WHOLE corpus (Linux/macOS/cloud/
+ML-class too; ML rules auto-skip on Basic) - enabled-but-dormant on this
+Windows-only lab, symmetric with the disable path. Your hand-authored rules
+(immutable: false) are never touched by a posture flip.
+
+## What GOAD core does to your specimen (read before writing detections)
+
+This is an observation lab: the hosts you attack are also hosts GOAD core has
+hardened. Know what was done to the specimen, or you will misattribute
+telemetry gaps to your rules:
+
+- **Defender realtime is OFF only on SRV02.** Core's `ansible/security.yml`
+  runs `settings/windows_defender` per group: `[defender_on]` (DC01, DC02,
+  DC03, SRV03) keep realtime protection ON; `[defender_off]` (SRV02) gets
+  `Set-MpPreference -DisableRealtimeMonitoring $true`. So the
+  `windows.windows_defender` stream watches a hobbled engine on SRV02 and a
+  live one elsewhere - SRV02 is the EDR-only comparison host by design.
+- **ASR (Attack Surface Reduction) rules are enforced core-wide**
+  (`ansible/roles/security/asr`). Some tradecraft will be silently blocked or
+  deformed by ASR before your detection ever sees it - a "no alert" may be an
+  ASR kill, not a rule gap.
+- **RunAsPPL=1 is set core-wide** (`ansible/roles/security/enable_run_as_ppl`).
+  LSASS runs as protected process light: Sysmon Event 10 OpenProcess access
+  masks against lsass (and the EDR's credential-access events) are shaped by
+  which handles PPL grants - expect truncated access masks rather than
+  full-handle reads from vanilla mimikatz-class tools.
 
 ## Credentials (this is a lab)
 
