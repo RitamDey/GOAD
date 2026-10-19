@@ -753,8 +753,9 @@
   when: endpoint_policy_name not in pp_names
 
 # Windows integration : winlog streams (battle-tested lab set, BSL / NetExec-Lab)
-# plus Windows Defender. Sysmon feeds windows.sysmon_operational; applocker and
-# forwarded add detection coverage; the metrics input is perfmon/service.
+# plus Windows Defender. Sysmon feeds windows.sysmon_operational; AppLocker and
+# forwarded add detection coverage. The optional windows-metrics input (perfmon/
+# service) is intentionally omitted from the default policy to limit volume.
 - name: Create windows package policy (Sysmon / PowerShell / Defender / AppLocker)
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
