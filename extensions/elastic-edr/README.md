@@ -163,6 +163,29 @@ memory **prevention** need a Platinum license and auto-degrade on Basic
 (detection is unaffected). For full prevention during a 30-day window, start a
 trial in Kibana (Management -> Stack Management -> License).
 
+## Two hunting postures (prepackaged rules)
+
+The prepackaged detection rules are **installed** on first deploy either way -
+the switch is whether they are **enabled**:
+
+| Posture | `prepackaged_rules_enabled` | Alerts view |
+|---|---|---|
+| **Out-of-the-box SIEM** (default) | `true` | 700+ Elastic + community detections live - attack, watch what the vendor catches |
+| **Solo hunting** | `false` | Empty - hunt raw telemetry in Discover, build your own alert rules, every alert is yours |
+
+Switch posture by flipping the flag (in `elastic_stack/defaults/main.yml`) and
+re-running `provision_extension elastic-edr`:
+- enabled -> solo: bulk-disables all prepackaged rules
+- solo -> enabled: bulk-enables all prepackaged rules (e.g. after building
+  your own rules, turn the vendor rules on and re-attack to compare)
+
+Between provisions your per-rule enable/disable toggles from the Kibana UI
+(Security -> Rules) are preserved - the posture change only runs when the flag
+itself changes vs the stored state. You can also toggle rules per-rule in the
+UI at any time without touching the extension. Deleting the state file
+(`{{ state_dir }}/prepackaged-rules-state` on the ELASTIC-EDR machine)
+re-applies the configured posture on the next run.
+
 ## Credentials (this is a lab)
 
 | user          | password   |

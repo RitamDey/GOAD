@@ -117,6 +117,24 @@ detection and the built-in SIEM rules work out of the box. Behavior /
 ransomware / memory **prevention** need Platinum and auto-degrade on Basic
 (detection is unaffected).
 
+## Two hunting postures (prepackaged rules)
+
+The prepackaged detection rules are **installed** on first deploy either way -
+the switch is whether they are **enabled** (`prepackaged_rules_enabled` in
+`elastic_stack/defaults/main.yml`):
+
+| Posture | flag | Alerts view |
+|---|---|---|
+| **Out-of-the-box SIEM** (default) | `true` | 700+ Elastic + community detections live |
+| **Solo hunting** | `false` | Empty - hunt raw telemetry in Discover, build your own alert rules |
+
+Flip the flag + re-run `provision_extension elastic-edr` to switch either
+direction (enabled -> solo bulk-disables all rules; solo -> enabled
+bulk-enables them - e.g. after building your own rules, turn the vendor rules
+on and re-attack to compare). Per-rule UI toggles (Security -> Rules) are
+preserved between provisions; the posture change only runs when the flag
+changes vs the stored state.
+
 ## Credentials (this is a lab)
 
 | user          | password   |

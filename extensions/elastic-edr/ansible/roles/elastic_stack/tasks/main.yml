@@ -859,7 +859,41 @@
       updated={{ de_prepackaged.json.rules_updated | default(0) }}
       (ML rules are skipped on the Basic license)
 
-- name: Bulk-enable the Windows detection rules
+# Prepackaged rules posture : configurable enable/disable with transition
+# detection. The posture is applied on FIRST run, and on later runs only when
+# the flag CHANGES vs the stored posture - so per-rule enable/disable toggles
+# made in the Kibana UI survive re-provisions. Transition table:
+#   stored absent + flag true  -> bulk-enable  (first run, default posture)
+#   stored absent + flag false -> no bulk action (rules stay dormant)
+#   stored == flag             -> no-op (learner UI toggles survive)
+#   stored != flag             -> transition: bulk-enable or bulk-disable
+- name: Check for stored prepackaged-rules posture
+  ansible.builtin.stat:
+    path: "{{ state_dir }}/prepackaged-rules-state"
+  register: pr_state_file
+
+- name: Read stored prepackaged-rules posture
+  ansible.builtin.slurp:
+    src: "{{ state_dir }}/prepackaged-rules-state"
+  register: pr_state_stored
+  when: pr_state_file.stat.exists
+
+- name: Compute prepackaged-rules posture transitions
+  ansible.builtin.set_fact:
+    pr_stored: >-
+      {{ (pr_state_stored.content | b64decode | trim)
+         if (pr_state_file.stat.exists | default(false)) else 'none' }}
+    pr_do_enable: >-
+      {{ ((not pr_state_file.stat.exists) and (prepackaged_rules_enabled | bool))
+         or (pr_state_file.stat.exists
+             and (pr_state_stored.content | b64decode | trim) == 'false'
+             and (prepackaged_rules_enabled | bool)) }}
+    pr_do_disable: >-
+      {{ (pr_state_file.stat.exists
+          and (pr_state_stored.content | b64decode | trim) == 'true'
+          and not (prepackaged_rules_enabled | bool)) }}
+
+- name: Enable ALL prepackaged detection rules (transition to enabled posture)
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/detection_engine/rules/_bulk_action"
     method: POST
@@ -871,13 +905,46 @@
       Content-Type: "application/json"
     body_format: json
     body:
-      query: 'alert.attributes.tags: ("Windows" OR "OS: Windows")'
+      # Fresh installs ship every prepackaged rule disabled, so the enable
+      # transition applies to the full corpus (all platforms), not just
+      # Windows-tagged rules.
+      query: '_exists_: alert.attributes.tags'
       action: "enable"
-  register: de_bulk
-  until: de_bulk.status in [200, 400]
+  register: de_bulk_enable
+  until: de_bulk_enable.status in [200, 400]
   retries: 10
   delay: 5
   timeout: 300
+  when: pr_do_enable | bool
+
+- name: Disable ALL prepackaged detection rules (transition to solo-hunting posture)
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/detection_engine/rules/_bulk_action"
+    method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      query: '_exists_: alert.attributes.tags'
+      action: "disable"
+  register: de_bulk_disable
+  until: de_bulk_disable.status in [200, 400]
+  retries: 10
+  delay: 5
+  timeout: 300
+  when: pr_do_disable | bool
+
+- name: Persist the prepackaged-rules posture
+  ansible.builtin.copy:
+    content: "{{ prepackaged_rules_enabled | bool | lower }}"
+    dest: "{{ state_dir }}/prepackaged-rules-state"
+    mode: "0640"
+    owner: root
+    group: root
 
 # Create a dedicated enrollment token bound to the policy (only if none exists yet).
 # NOTE: the 8.19 schema is { name?, policy_id, expiration? } - the field is

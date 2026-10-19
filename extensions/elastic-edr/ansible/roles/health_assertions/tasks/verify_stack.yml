@@ -140,7 +140,7 @@
       Elasticsearch    : http://{{ hostvars[inventory_hostname].ansible_host }}:{{ es_http_port }}
       Fleet Server     : {{ fleet_server_host_url | default('https://' ~ hostvars[inventory_hostname].ansible_host ~ ':' ~ (fleet_server_port | default(8220))) }}
       Agents online    : {{ (fleet_agents_online.json['items'] | default([])) | selectattr('status','equalto','online') | list | length }} / {{ (fleet_agents_online.json['items'] | default([])) | length }}
-      Detection rules  : {{ rules_status.json.rules_installed | default(0) }} prepackaged installed
+      Detection rules  : {{ rules_status.json.rules_installed | default(0) }} prepackaged installed ({{ 'ENABLED' if prepackaged_rules_enabled | default(true) | bool else 'DISABLED - solo hunting posture' }})
       Event data       : {{ es_data_count.json.count | default(0) }} docs in logs-*/metrics-*
       Windows agents   : enroll in the next play - their online status is
                          asserted there (stage: verify_agents)

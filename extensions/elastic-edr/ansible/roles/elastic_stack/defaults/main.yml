@@ -57,6 +57,21 @@ edr_preset: "EDRComplete"
 endpoint_policy_name: "goad-elastic-defend"
 windows_policy_name: "goad-windows-sysmon"
 
+# Prepackaged detection rules: enable after install?
+#   true  = install + enable ALL prepackaged rules (out-of-the-box SIEM)
+#   false = install only, rules stay DISABLED - solo hunting: attack, study
+#           raw telemetry in Discover (logs-endpoint.events.*, sysmon,
+#           logs-system.security-*), build your own alert rules in the UI
+# State transitions apply on re-provision: on FIRST run the posture is
+# applied per this flag; on later runs the bulk enable/disable runs only
+# when this flag CHANGES vs the stored posture ({{ state_dir }}), so your
+# per-rule enable/disable toggles from the Kibana UI survive re-provisions.
+# Flipping the flag + re-provisioning converts either direction:
+#   true after a solo-hunting install -> enables all prepackaged rules
+#   false after an enabled install    -> disables all prepackaged rules
+# Per-rule toggles are always available in the Kibana UI between provisions.
+prepackaged_rules_enabled: true
+
 # State directory where credentials / tokens are persisted for re-runs and for
 # the windows agent play to read the enrollment token.
 state_dir: /etc/elastic-edr
