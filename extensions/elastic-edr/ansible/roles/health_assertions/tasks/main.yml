@@ -2,7 +2,8 @@
 # Include with:
 #   - { role: 'health_assertions', stage: 'verify_stack' }   (play 1)
 #   - { role: 'health_assertions', stage: 'verify_agents' }  (play 2)
-# Each stage is a task file so the two plays stay independently re-runnable
+#   - { role: 'health_assertions', stage: 'aggregate' }      (play 3)
+# Each stage is a task file so the three plays stay independently re-runnable
 # and the failure diagnostics stay scoped to the stage that failed.
 
 - name: Run health assertions ({{ stage | default('MISSING stage var') }})

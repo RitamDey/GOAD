@@ -959,6 +959,12 @@
 #   stored absent + flag false -> no bulk action (rules stay dormant)
 #   stored == flag             -> no-op (learner UI toggles survive)
 #   stored != flag             -> transition: bulk-enable or bulk-disable
+# Scope of the bulk actions: ONLY prepackaged (Elastic-managed) rules, via the
+# alert.attributes.params.immutable: true discriminator - the same field the
+# Kibana Rules UI uses for its "Elastic rules" filter (verified in the 8.19.23
+# source: rule_management/rule_fields.ts, PARAMS_IMMUTABLE_FIELD; prepackaged
+# rules are immutable, hand-authored rules are mutable and are NEVER touched
+# by a posture flip).
 - name: Check for stored prepackaged-rules posture
   ansible.builtin.stat:
     path: "{{ state_dir }}/prepackaged-rules-state"
@@ -972,18 +978,22 @@
 
 - name: Compute prepackaged-rules posture transitions
   ansible.builtin.set_fact:
-    pr_stored: >-
-      {{ (pr_state_stored.content | b64decode | trim)
-         if (pr_state_file.stat.exists | default(false)) else 'none' }}
     pr_do_enable: >-
       {{ ((not pr_state_file.stat.exists) and (prepackaged_rules_enabled | bool))
          or (pr_state_file.stat.exists
-             and (pr_state_stored.content | b64decode | trim) == 'false'
+             and pr_stored == 'false'
              and (prepackaged_rules_enabled | bool)) }}
     pr_do_disable: >-
       {{ (pr_state_file.stat.exists
-          and (pr_state_stored.content | b64decode | trim) == 'true'
+          and pr_stored == 'true'
           and not (prepackaged_rules_enabled | bool)) }}
+  vars:
+    # Task-scoped decode of the stored posture: a single decode point, and
+    # it must NOT go through set_fact persistence - set_fact coerces the
+    # string 'true' into a native boolean, which would break the 'true'/
+    # 'false' string comparisons here (verified on ansible-core 2.18).
+    pr_stored: "{{ (pr_state_stored.content | b64decode | trim)
+                   if (pr_state_file.stat.exists | default(false)) else 'none' }}"
 
 - name: Enable ALL prepackaged detection rules (transition to enabled posture)
   ansible.builtin.uri:
@@ -997,10 +1007,11 @@
       Content-Type: "application/json"
     body_format: json
     body:
-      # Fresh installs ship every prepackaged rule disabled, so the enable
-      # transition applies to the full corpus (all platforms), not just
-      # Windows-tagged rules.
-      query: '_exists_: alert.attributes.tags'
+      # alert.attributes.params.immutable: true = exactly the prepackaged
+      # (Elastic-managed) rule corpus, every platform; hand-authored rules
+      # (immutable: false) are untouched. Verified against the Kibana 8.19.23
+      # rule-management source (PARAMS_IMMUTABLE_FIELD / KQL_FILTER_IMMUTABLE_RULES).
+      query: 'alert.attributes.params.immutable: true'
       action: "enable"
   register: de_bulk_enable
   until: de_bulk_enable.status in [200, 400]
@@ -1021,7 +1032,7 @@
       Content-Type: "application/json"
     body_format: json
     body:
-      query: '_exists_: alert.attributes.tags'
+      query: 'alert.attributes.params.immutable: true'
       action: "disable"
   register: de_bulk_disable
   until: de_bulk_disable.status in [200, 400]
@@ -1032,7 +1043,9 @@
 
 - name: Persist the prepackaged-rules posture
   ansible.builtin.copy:
-    content: "{{ prepackaged_rules_enabled | bool | lower }}"
+    # Explicit bool-to-string (no bool|lower chain): renders exactly
+    # 'true'/'false', which is what the transition facts compare against.
+    content: "{{ 'true' if (prepackaged_rules_enabled | bool) else 'false' }}"
     dest: "{{ state_dir }}/prepackaged-rules-state"
     mode: "0640"
     owner: root

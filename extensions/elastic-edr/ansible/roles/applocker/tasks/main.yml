@@ -15,17 +15,40 @@
 
 # AppIDSvc (Application Identity) must be running for AppLocker to evaluate
 # and log anything; default is trigger-start, force automatic for a lab.
+# Declarative/idempotent: always safe to re-assert, so changed_when: false.
 - name: Set AppIDSvc to automatic (required for AppLocker eventing)
   ansible.windows.win_shell: Set-Service -Name AppIDSvc -StartupType Automatic
   register: appidsvc_result
-  changed_when: "'changed' in appidsvc_result.stdout_lines | lower"
+  changed_when: false
 
-- name: Apply the AppLocker audit-only policy (local policy, idempotent)
+# Apply the policy only when the effective policy XML differs from the file
+# we ship - a real change report, not unconditional changed=true. Captures
+# hand-edits to the effective policy between runs too. The SHA-256 of the
+# XML string is compared before/after the apply.
+- name: Hash the effective AppLocker policy (before)
+  ansible.windows.win_shell: |
+    $p = Get-AppLockerPolicy -Effective -Xml
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($p))).Replace('-','')
+  register: applocker_hash_before
+  changed_when: false
+  failed_when: false
+
+- name: Apply the AppLocker audit-only policy (local policy)
   ansible.windows.win_shell: >-
     Set-AppLockerPolicy -XmlPolicy "{{ applocker_install_location }}\{{ applocker_policy_file }}"
   register: applocker_apply
-  changed_when: true
+  changed_when: applocker_hash_before.stdout | default('') != applocker_hash_after.stdout | default('')
   failed_when: applocker_apply.rc is defined and applocker_apply.rc != 0
+
+- name: Hash the effective AppLocker policy (after)
+  ansible.windows.win_shell: |
+    $p = Get-AppLockerPolicy -Effective -Xml
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($p))).Replace('-','')
+  register: applocker_hash_after
+  changed_when: false
+  failed_when: false
 
 - name: Verify the AppLocker policy is active (audit mode)
   ansible.windows.win_shell: |

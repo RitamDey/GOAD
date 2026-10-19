@@ -13,12 +13,14 @@
 # idempotent: auditpol re-runs are declarative, registry writes use
 # win_regedit with explicit values.
 
+# auditpol /set is declarative-idempotent (re-asserting the same state is a
+# no-op on Windows), so these report ok: on re-runs instead of fake "changed".
 - name: Enable the security audit subcategories (Sigma logsource baseline)
   ansible.windows.win_shell: >-
     auditpol /set /subcategory:"{{ item }}" /success:enable /failure:enable
   loop: "{{ endpoint_logging_audit_subcategories }}"
   register: auditpol_res
-  changed_when: true
+  changed_when: false
   failed_when: auditpol_res.rc is defined and auditpol_res.rc != 0
 
 - name: Enable optional extra audit subcategories (high volume / SACL dependent)
@@ -26,7 +28,7 @@
     auditpol /set /subcategory:"{{ item }}" /success:enable /failure:enable
   loop: "{{ endpoint_logging_audit_subcategories_extra }}"
   register: auditpol_extra
-  changed_when: true
+  changed_when: false
   failed_when: auditpol_extra.rc is defined and auditpol_extra.rc != 0
   when:
     - endpoint_logging_enable_extra | default(false) | bool
