@@ -1,7 +1,8 @@
 # elastic-edr extension : install playbook
-# Play 1 : deploy the Elastic Stack (ES 8.x + Kibana + Fleet + EDR policy + token)
+# Play 1 : deploy the Elastic Stack (ES 8.x + Kibana + Fleet) + a dedicated
+#          Fleet Server on :8220 + EDR policies + detection rules + token
 # Play 2 : install Sysmon + Elastic Agent on every domain windows machine and
-#          enroll it in Fleet using the token emitted by play 1.
+#          enroll it in the Fleet Server using the token emitted by play 1.
 
 - name: Install Elastic Stack (EDR)
   hosts: elastic-edr_server
@@ -27,6 +28,7 @@
       ansible.builtin.set_fact:
         elastic_host: "{{ hostvars['elastic-edr'].ansible_host }}"
         kibana_port: 5601
+        fleet_server_port: 8220
 
   roles:
     - { role: 'sysmon', tags: 'agent' }

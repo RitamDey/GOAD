@@ -10,7 +10,8 @@ elastic_agent_version: "8.19.23"
 elastic_agent_download_url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elastic_agent_version }}-windows-x86_64.msi"
 elastic_agent_install_location: "C:\\elastic-agent"
 
-# Fleet control-plane URL (base). Kibana serves the Fleet agent protocol (enroll +
-# checkin) on its own port in this single-VM self-managed setup - the agent appends
-# /api/fleet/agents/enroll itself. Data (events) flows to Elasticsearch on 9200.
-elastic_agent_fleet_url: "http://{{ elastic_host }}:{{ kibana_port }}"
+# Fleet control-plane URL (base) : the dedicated Fleet Server on this VM's :8220
+# (BSL / LME / elastic-container pattern). The Fleet Server agent auto-generates a
+# self-signed cert, so agents enroll with --insecure (see the tasks). Data (events)
+# flows to Elasticsearch on 9200 via the policy's default output.
+elastic_agent_fleet_url: "https://{{ elastic_host }}:{{ fleet_server_port | default(8220) }}"

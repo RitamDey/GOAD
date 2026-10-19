@@ -4,6 +4,9 @@ server.port: 5601
 elasticsearch.hosts: [ "http://localhost:9200" ]
 elasticsearch.username: "kibana_system"
 elasticsearch.password: "{{ kibana_system_password }}"
+# Fleet / Alerts encrypt saved objects (outputs, api keys) - fixed lab key
+# (BSL / LME / elastic-container pattern; >= 32 chars, lab only, do not reuse).
+xpack.encryptedSavedObjects.encryptionKey: "goad-elastic-edr-lab-key-change-me-32ch"
 # Data plane : where the (remote) enrolled agents send their events. This is a
 # SEPARATE setting from Kibana's own elasticsearch.hosts - Fleet hands it to each
 # agent's ES output (Fleet auto-generates the per-agent ES API key). It must be
@@ -11,13 +14,17 @@ elasticsearch.password: "{{ kibana_system_password }}"
 xpack.fleet.agents.elasticsearch.hosts:
   - "http://{{ hostvars[inventory_hostname].ansible_host }}:{{ es_http_port }}"
 #
-# Fleet : preconfigure the agent policy so enrollment tokens can be issued via API.
-# The three integrations are preinstalled in the local registry (offline safe):
-#   system   -> attached to the policy here (preconfiguration)
-#   endpoint -> Elastic Defend engine, attached via the Fleet API (EDRComplete),
-#               because the EDR engine cannot be preconfigured in kibana.yml
-#   windows  -> Sysmon / PowerShell / Defender winlog, attached via the Fleet API
+# Fleet : preconfigure the agent policies so enrollment tokens can be issued via
+# API and the Fleet Server agent can self-enroll (FLEET_SERVER_POLICY_ID below).
+# The four integrations are preinstalled in the local registry (offline safe):
+#   fleet_server -> attached to Fleet-Server-Policy here (preconfiguration)
+#   system       -> attached to GOAD-EDR-Policy here (preconfiguration)
+#   endpoint     -> Elastic Defend engine, attached via the Fleet API (EDRComplete),
+#                   because the EDR engine cannot be preconfigured in kibana.yml
+#   windows      -> Sysmon / PowerShell / Defender winlog, attached via the Fleet API
 xpack.fleet.packages:
+  - name: fleet_server
+    version: latest
   - name: system
     version: latest
   - name: endpoint
@@ -25,6 +32,17 @@ xpack.fleet.packages:
   - name: windows
     version: latest
 xpack.fleet.agentPolicies:
+  # Dedicated Fleet Server policy (control plane on :8220). The elastic-agent
+  # installed on this VM enrolls into it (same shape as BSL / LME / elastic-container).
+  - name: Fleet-Server-Policy
+    id: fleet-server-policy
+    namespace: default
+    description: "GOAD elastic-edr extension - Fleet Server control plane"
+    package_policies:
+      - name: fleet_server-1
+        package:
+          name: fleet_server
+  # Endpoint policy for the windows domain machines.
   - name: GOAD-EDR-Policy
     id: goad-edr-policy
     namespace: default

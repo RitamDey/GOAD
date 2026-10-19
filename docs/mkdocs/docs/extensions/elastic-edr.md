@@ -6,11 +6,13 @@
 - Add a machine : elastic-edr (ip_range.53, 16GB RAM / 4 cpu)
 
 - Kibana / Fleet is configured on http://{{ip_range}}.53:5601
-- Elastic Stack 8.x (Elasticsearch + Kibana + Fleet) with the **Elastic Defend
-  engine** (the `endpoint` integration, `EDRComplete` preset) + the `windows`
-  integration (Sysmon / PowerShell / Defender winlog)
+- Elastic Stack 8.x (Elasticsearch + Kibana + Fleet) with a **dedicated Fleet
+  Server on :8220** (agent control plane), the **Elastic Defend engine** (the
+  `endpoint` integration, `EDRComplete` preset) + the `windows` integration
+  (Sysmon / PowerShell / Defender / AppLocker winlog)
+- **Prepackaged SIEM detection rules installed and enabled** (the attack -> alert loop)
 - Installs **Sysmon 14.14** + the **Elastic Agent** (MSI) on all domain windows
-  machines and enrolls them in Fleet
+  machines and enrolls them in the Fleet Server
 
 This extension is the full attack / defend / purple team upgrade of the `elk`
 extension. `elk` ships winlogbeat log aggregation, `elastic-edr` ships real
@@ -19,14 +21,28 @@ install Sysmon).
 
 ## What gets deployed on each agent
 
-- The Elastic Agent (Fleet managed, enrolls on Kibana :5601, events to ES :9200)
+- The Elastic Agent (Fleet managed, enrolls on Fleet Server :8220, events to ES :9200)
 - Sysmon 14.14 with the SwiftOnSecurity sysmon-config v74 (EDR event source)
 - The agent policy carries : `system`, Elastic Defend (`endpoint`, EDRComplete)
-  and the `windows` integration limited to the `sysmon_operational`,
-  `powershell_operational` and `windows_defender` streams
+  and the `windows` integration with the `sysmon_operational`, `powershell`,
+  `powershell_operational`, `windows_defender`, `applocker_*` and `forwarded`
+  winlog streams + windows metrics
 
 Sysmon is pinned to 14.x because 15.x dropped Windows Server 2016 support
 (DC03 runs the 2016 template).
+
+## Architecture / ports
+
+| port | service | used by |
+|------|---------|---------|
+| 5601 | Kibana (Fleet UI, Alerts, SIEM) | you (browser) |
+| 8220 | Fleet Server (agent enroll + checkin, self-signed https) | windows agents |
+| 9200 | Elasticsearch (agent events / data plane) | windows agents |
+
+No new machine is added: the Fleet Server runs on the same machine as
+ES + Kibana, and the Fleet management UI stays inside Kibana - only the agent
+control plane moves to 8220. The windows machines need 8220 + 9200 open toward
+the ELASTIC-EDR machine.
 
 ## License / feature levels
 

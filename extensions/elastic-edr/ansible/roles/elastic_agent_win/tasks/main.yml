@@ -1,15 +1,16 @@
 # elastic-edr extension : windows agent role
-# Installs the Elastic Agent on a Windows domain machine and enrolls it in Fleet
-# using the enrollment token (bound to the EDR policy, which carries the
+# Installs the Elastic Agent on a Windows domain machine and enrolls it in the
+# dedicated Fleet Server (https://<elastic-host>:8220, self-signed cert -> --insecure)
+# using the enrollment token bound to the EDR policy, which carries the
 # "endpoint" / Elastic Defend engine, the "system" package and the "windows"
-# Sysmon / PowerShell / Defender integration). Expects vars:
+# Sysmon / PowerShell / Defender / AppLocker integration. Expects vars:
 #   elastic_host           - ansible_host of the elastic-edr machine
-#   kibana_port            - Kibana / Fleet port (5601)
+#   fleet_server_port      - Fleet Server port (8220, set in install.yml pre_tasks)
 #   edr_enrollment_token   - Fleet enrollment token (base64)
 # Sysmon is expected to be installed first (see the sysmon role).
 #
 # Uses the official MSI installer (msiexec). It runs `elastic-agent install`
-# under the hood with INSTALLARGS = "--url=... --enrollment-token=...".
+# under the hood with INSTALLARGS = "--url=... --enrollment-token=... --insecure".
 # The PowerShell stop-parsing token (--%) keeps INSTALLARGS verbatim.
 
 - name: Check if Elastic Agent service is installed
@@ -37,7 +38,7 @@
 - name: Install and enroll Elastic Agent into Fleet (MSI)
   win_shell: >-
     "{{ elastic_agent_install_location }}\elastic-agent-{{ elastic_agent_version }}-windows-x86_64.msi"
-    --% INSTALLARGS="--url={{ elastic_agent_fleet_url }} --enrollment-token={{ edr_enrollment_token }}"
+    --% INSTALLARGS="--url={{ elastic_agent_fleet_url }} --enrollment-token={{ edr_enrollment_token }} --insecure"
   when: not ea_service.exists
   register: ea_msi
   failed_when: ea_msi.rc not in [0, 3010]

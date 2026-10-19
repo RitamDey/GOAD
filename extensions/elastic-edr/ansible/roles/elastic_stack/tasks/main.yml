@@ -1,11 +1,17 @@
 # elastic-edr extension : stack role
 # Deploys a self managed Elastic Stack 8.x (Elasticsearch + Kibana + Fleet) with
-# X-Pack security enabled (TLS disabled for a simple isolated lab) and a
-# preconfigured agent policy. The "system" package is attached via kibana.yml
-# preconfiguration; the Elastic Defend engine (the "endpoint" integration,
-# EDRComplete preset) and the "windows" integration (Sysmon / PowerShell /
-# Defender winlog) are attached through the Fleet API, since the EDR engine
-# cannot be preconfigured in kibana.yml. Emits a Fleet enrollment token to
+# X-Pack security enabled (TLS disabled for a simple isolated lab) and TWO
+# preconfigured agent policies:
+#   - Fleet-Server-Policy : a dedicated Fleet Server (control plane on :8220),
+#     installed on this VM as its single elastic-agent (BSL / LME / elastic-
+#     container pattern). Windows agents enroll at https://<vm>:8220 --insecure.
+#   - GOAD-EDR-Policy     : the windows endpoints policy (system package via
+#     preconfiguration); the Elastic Defend engine (the "endpoint" integration,
+#     EDRComplete preset) and the "windows" integration (Sysmon / PowerShell /
+#     Defender + applocker winlog) are attached through the Fleet API, since the
+#     EDR engine cannot be preconfigured in kibana.yml.
+# Also enables the Detection Engine and installs + enables the prepackaged SIEM
+# detection rules (attack -> alert loop), and emits a Fleet enrollment token to
 # {{ state_dir }} for the windows agent play.
 
 - name: Ensure required dependencies
@@ -214,6 +220,239 @@
   ansible.builtin.set_fact:
     kbn_version: "{{ kbn_status.json.version.number | default('') }}"
 
+# ---------------------------------------------------------------------------
+# Dedicated Fleet Server (control plane on :8220)
+# Same pattern as BSL / LME / elastic-container: the single elastic-agent on
+# this VM runs the fleet-server subprocess, enrolled in the preconfigured
+# fleet-server-policy. Other agents enroll at https://<vm>:8220 --insecure.
+# ---------------------------------------------------------------------------
+
+# Single-node cluster : avoid perpetual yellow (unassigned replica shards) on
+# the fleet / logs / metrics indices (cisagov/LME pattern).
+- name: Set number_of_replicas to 0 (single node)
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/_settings"
+    method: PUT
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      index:
+        number_of_replicas: 0
+  register: es_replicas
+  until: es_replicas.status == 200
+  retries: 5
+  delay: 5
+  changed_when: false
+
+- name: Init Fleet setup (creates indices / default output scaffolding)
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/setup"
+    method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+    body_format: json
+    body: {}
+  register: fleet_setup
+  until: fleet_setup.status in [200, 400]
+  retries: 10
+  delay: 5
+  timeout: 30
+
+- name: Wait for the Fleet Server policy ({{ fleet_server_policy_name }})
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/agent_policies"
+    method: GET
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+    return_content: yes
+  register: fs_policies
+  until: fs_policies.status == 200 and ( (fs_policies.json['list'] | default(fs_policies.json['items'] | default([]))) | selectattr('name', 'equalto', fleet_server_policy_name) | list | length) > 0
+  retries: 15
+  delay: 5
+  timeout: 30
+
+- name: Set fact fleet server policy id
+  ansible.builtin.set_fact:
+    fs_policy_id: "{{ (fs_policies.json['list'] | default(fs_policies.json['items'] | default([]))) | selectattr('name', 'equalto', fleet_server_policy_name) | map(attribute='id') | first }}"
+
+# Two DISTINCT credentials for the Fleet Server agent :
+#   - the ES service token (fleet-server -> Elasticsearch communication)
+#   - the enrollment API key of fleet-server-policy (agent -> Fleet enrollment)
+- name: Generate Fleet Server ES service token
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/_security/service/elastic/fleet-server/credential/token/{{ fleet_server_service_token_name }}"
+    method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    body_format: json
+    body: {}
+  register: fs_service_token
+  until: fs_service_token.status == 200
+  retries: 5
+  delay: 5
+
+- name: Set fact fleet server service token
+  ansible.builtin.set_fact:
+    fleet_server_service_token: "{{ fs_service_token.json.token.value }}"
+
+- name: List existing enrollment tokens
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/enrollment_api_keys"
+    method: GET
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+    return_content: yes
+  register: tokens_all
+  until: tokens_all.status == 200
+  retries: 5
+  delay: 3
+  timeout: 30
+
+- name: Set fact fleet server token present
+  ansible.builtin.set_fact:
+    fs_token_present: "{{ tokens_all.json['items'] | selectattr('name', 'equalto', fleet_server_enrollment_token_name) | list | length > 0 }}"
+
+- name: Create enrollment token for the Fleet Server policy
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/enrollment_api_keys"
+    method: POST
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "{{ fleet_server_enrollment_token_name }}"
+      policy_id: "{{ fs_policy_id }}"
+  register: fs_create_token
+  when: not fs_token_present
+
+- name: Set fact fleet server enrollment token
+  ansible.builtin.set_fact:
+    fs_enrollment_token: >-
+      {{ (fs_create_token.json.item.api_key | default(''))
+         if (not fs_token_present)
+         else (tokens_all.json['items'] | selectattr('name', 'equalto', fleet_server_enrollment_token_name) | map(attribute='api_key') | first) }}
+
+- name: Check if the Fleet Server agent is already installed
+  ansible.builtin.stat:
+    path: /opt/Elastic/elastic-agent/elastic-agent
+  register: fs_agent_installed
+
+# Fleet Server : downloads the linux agent, installs + enrolls it into the
+# fleet-server-policy. With no --fleet-server-cert* flags the agent auto-generates
+# a self-signed certificate and serves https://<vm>:8220 (its own bootstrap
+# enrollment runs over the internal localhost:8221 endpoint, CA auto-injected).
+- name: Download the Linux Elastic Agent ({{ elastic_agent_linux_version }})
+  ansible.builtin.get_url:
+    url: "{{ elastic_agent_linux_url }}"
+    dest: "/tmp/elastic-agent-{{ elastic_agent_linux_version }}-linux-x86_64.tar.gz"
+    mode: "0644"
+  register: fs_download
+  until: fs_download is succeeded
+  retries: 3
+  delay: 10
+  when: not fs_agent_installed.stat.exists
+
+- name: Extract the Linux Elastic Agent
+  ansible.builtin.unarchive:
+    src: "/tmp/elastic-agent-{{ elastic_agent_linux_version }}-linux-x86_64.tar.gz"
+    dest: /tmp
+    remote_src: true
+  when: not fs_agent_installed.stat.exists
+
+- name: Install and enroll the Fleet Server agent
+  ansible.builtin.command: >-
+    /tmp/elastic-agent-{{ elastic_agent_linux_version }}-linux-x86_64/elastic-agent install
+    --url=http://localhost:{{ kibana_port }}
+    --enrollment-token={{ fs_enrollment_token }}
+    --fleet-server-es=http://127.0.0.1:{{ es_http_port }}
+    --fleet-server-service-token={{ fleet_server_service_token }}
+    --fleet-server-policy={{ fleet_server_policy_id }}
+    --fleet-server-host=0.0.0.0
+    --fleet-server-port={{ fleet_server_port }}
+    --force --non-interactive
+  register: fs_install
+  when: not fs_agent_installed.stat.exists
+
+- name: Wait for the Fleet Server to listen ({{ fleet_server_port }})
+  ansible.builtin.wait_for:
+    host: "127.0.0.1"
+    port: "{{ fleet_server_port }}"
+    state: started
+    delay: 5
+    timeout: 300
+
+- name: Ensure the elastic-agent service is running
+  ansible.builtin.service:
+    name: elastic-agent
+    state: started
+    start_mode: auto
+
+# Register the Fleet Server host (LAN IP, NOT 127.0.0.1) so the Fleet UI shows it
+# and every agent policy defaults to it (elastic-container / LME pattern).
+- name: Set fact fleet server host url (the VM's real IP)
+  ansible.builtin.set_fact:
+    fleet_server_host_url: "https://{{ hostvars[inventory_hostname].ansible_host }}:{{ fleet_server_port }}"
+
+- name: List registered Fleet Server hosts
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/fleet_server_hosts"
+    method: GET
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+    return_content: yes
+  register: fs_hosts
+  until: fs_hosts.status == 200
+  retries: 5
+  delay: 3
+  timeout: 30
+
+- name: Set fact fleet server host registered
+  ansible.builtin.set_fact:
+    fs_host_registered: "{{ fs_hosts.json['items'] | default([]) | selectattr('host_urls', 'defined') | selectattr('host_urls', 'search', '://' ~ hostvars[inventory_hostname].ansible_host ~ ':' ~ fleet_server_port) | list | length > 0 }}"
+
+- name: Register the Fleet Server host in Fleet
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/fleet_server_hosts"
+    method: POST
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "goad-fleet-server"
+      host_urls:
+        - "{{ fleet_server_host_url }}"
+      is_default: true
+  register: fs_host_reg
+  until: fs_host_reg.status == 200
+  retries: 5
+  delay: 5
+  timeout: 30
+  when: not fs_host_registered
+
+
 # Data plane : enrolled (remote) agents write events to Elasticsearch through the
 # Fleet "default" output. That output is created the first time Kibana starts
 # (during the apt install, before this role's kibana.yml is written) with the
@@ -369,9 +608,10 @@
   timeout: 60
   when: endpoint_policy_name not in pp_names
 
-# Windows integration : Sysmon / PowerShell / Defender winlog streams.
-# These feed the Sysmon events (installed by the sysmon role) into Elasticsearch.
-- name: Create windows package policy (Sysmon / PowerShell / Defender)
+# Windows integration : winlog streams (battle-tested lab set, BSL / NetExec-Lab)
+# plus Windows Defender. Sysmon feeds windows.sysmon_operational; applocker and
+# forwarded add detection coverage; the metrics input is perfmon/service.
+- name: Create windows package policy (Sysmon / PowerShell / Defender / AppLocker)
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
     method: POST
@@ -384,7 +624,7 @@
     body_format: json
     body:
       name: "{{ windows_policy_name }}"
-      description: "GOAD elastic-edr - Sysmon / PowerShell / Defender winlog"
+      description: "GOAD elastic-edr - Sysmon / PowerShell / Defender / AppLocker winlog"
       namespace: "default"
       policy_id: "{{ policy_id }}"
       vars: {}
@@ -394,9 +634,28 @@
           streams:
             windows.sysmon_operational:
               enabled: true
+            windows.powershell:
+              enabled: true
             windows.powershell_operational:
               enabled: true
             windows.windows_defender:
+              enabled: true
+            windows.applocker_exe_and_dll:
+              enabled: true
+            windows.applocker_msi_and_script:
+              enabled: true
+            windows.applocker_packaged_app_deployment:
+              enabled: true
+            windows.applocker_packaged_app_execution:
+              enabled: true
+            windows.forwarded:
+              enabled: true
+        windows-windows/metrics:
+          enabled: true
+          streams:
+            windows.perfmon:
+              enabled: true
+            windows.service:
               enabled: true
       package:
         name: "windows"
@@ -416,7 +675,220 @@
     - endpoint_policy is defined
     - endpoint_policy.status not in [200, 409]
 
+# Flip the Defend engine to DETECT-ONLY mode. The EDRComplete preset defaults the
+# protections to PREVENT, which would block test payloads (EICAR / ransomware
+# drops / mimikatz) before they can be observed - useless for a purple-team range.
+# Every battle-tested red-team lab (BSL/NetExec-Lab "Ludus - X protection", LME,
+# jadu101) pushes this explicit policy right after creating the integration:
+#   malware / ransomware / memory / behavior -> mode: detect
+#   all 8 Windows event categories on, antivirus_registration on,
+#   credential_hardening off, popup banners on so operators see detections.
+- name: Set fact Elastic Defend policy id
+  ansible.builtin.set_fact:
+    endpoint_policy_id: "{{ endpoint_policy.json.item.id }}"
+  when:
+    - endpoint_policy is defined
+    - endpoint_policy.status in [200, 409]
+    - endpoint_policy.json.item.id is defined
+
+- name: Set Elastic Defend engine to detect-only mode (purple team)
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies/{{ endpoint_policy_id }}"
+    method: PUT
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+      Content-Type: "application/json"
+    body_format: json
+    timeout: 120
+    body:
+      name: "{{ endpoint_policy_name }}"
+      namespace: "default"
+      policy_id: "{{ policy_id }}"
+      enabled: true
+      inputs:
+        - enabled: true
+          streams: []
+          type: "ENDPOINT_INTEGRATION_CONFIG"
+          config:
+            _config:
+              value:
+                type: "endpoint"
+                endpointConfig:
+                  preset: "{{ edr_preset }}"
+                  policy:
+                    value:
+                      windows:
+                        events:
+                          credential_access: true
+                          dll_and_driver_load: true
+                          dns: true
+                          file: true
+                          network: true
+                          process: true
+                          registry: true
+                          security: true
+                        malware:
+                          mode: "detect"
+                          blocklist: false
+                        ransomware:
+                          mode: "detect"
+                          supported: true
+                        memory_protection:
+                          mode: "detect"
+                          supported: true
+                        behavior_protection:
+                          mode: "detect"
+                          reputation_service: true
+                          supported: true
+                        popup:
+                          malware:
+                            message: "GOAD - malware protection (detect)"
+                            enabled: true
+                          ransomware:
+                            message: "GOAD - ransomware protection (detect)"
+                            enabled: true
+                          memory_protection:
+                            message: "GOAD - memory protection (detect)"
+                            enabled: true
+                          behavior_protection:
+                            message: "GOAD - behavior protection (detect)"
+                            enabled: true
+                        logging:
+                          file: "info"
+                        antivirus_registration:
+                          enabled: true
+                        attack_surface_reduction:
+                          credential_hardening:
+                            enabled: false
+                      mac:
+                        events:
+                          process: true
+                          file: true
+                          network: true
+                        malware:
+                          mode: "detect"
+                          blocklist: true
+                        memory_protection:
+                          mode: "detect"
+                          supported: true
+                        behavior_protection:
+                          mode: "detect"
+                          reputation_service: false
+                          supported: true
+                      linux:
+                        events:
+                          process: true
+                          file: true
+                          network: true
+                          session_data: true
+                          tty_io: false
+                        malware:
+                          mode: "detect"
+                          blocklist: true
+                        memory_protection:
+                          mode: "detect"
+                          supported: true
+                        behavior_protection:
+                          mode: "detect"
+                          reputation_service: false
+                          supported: true
+      version: "{{ endpoint_package_version }}"
+      force: true
+  register: endpoint_detect
+  until: endpoint_detect.status in [200, 409]
+  retries: 5
+  delay: 5
+  when: endpoint_policy_id is defined
+
+- name: Fail if the Defend engine detect-mode update failed
+  ansible.builtin.fail:
+    msg: "Could not set the Elastic Defend engine to detect-only mode (status {{ endpoint_detect.status | default('skipped') }})."
+  when:
+    - endpoint_policy_id is defined
+    - endpoint_detect is defined
+    - endpoint_detect.status not in [200, 409]
+
+# Detection engine : attack -> alert loop.
+# 3-step sequence from peasead/elastic-container (the battle-tested lab base):
+# 1. enable the engine (creates the alerts indices)
+# 2. install the prepackaged (built-in SIEM) rules - NOT auto-installed on a
+#    fresh self-managed install (verified in the 8.19 source)
+# 3. bulk-enable the rules matching Windows (fresh installs ship them disabled)
+# Idempotent: step 2 returns 200 {rules_installed:0,...} on re-runs.
+- name: Enable the detection engine
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/detection_engine/index"
+    method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+    body_format: json
+    body: {}
+  register: de_enable
+  until: de_enable.status in [200, 400]
+  retries: 10
+  delay: 5
+  timeout: 60
+
+- name: Install prepackaged (built-in SIEM) detection rules
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/detection_engine/rules/prepackaged"
+    method: PUT
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body: {}
+  register: de_prepackaged
+  until: de_prepackaged.status == 200
+  retries: 10
+  delay: 10
+  timeout: 600
+  changed_when: (de_prepackaged.json.rules_installed | default(0)) | int > 0
+
+- name: Assert prepackaged detection rules installed
+  ansible.builtin.assert:
+    that:
+      - de_prepackaged.status == 200
+      - de_prepackaged.json.rules_installed is defined
+      - de_prepackaged.json.rules_updated is defined
+    fail_msg: "Prepackaged detection rules install failed (status {{ de_prepackaged.status | default('n/a') }})."
+    success_msg: >-
+      Prepackaged rules: installed={{ de_prepackaged.json.rules_installed | default(0) }}
+      updated={{ de_prepackaged.json.rules_updated | default(0) }}
+      (ML rules are skipped on the Basic license)
+
+- name: Bulk-enable the Windows detection rules
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/detection_engine/rules/_bulk_action"
+    method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      query: 'alert.attributes.tags: ("Windows" OR "OS: Windows")'
+      action: "enable"
+  register: de_bulk
+  until: de_bulk.status in [200, 400]
+  retries: 10
+  delay: 5
+  timeout: 300
+
 # Create a dedicated enrollment token bound to the policy (only if none exists yet).
+# NOTE: the 8.19 schema is { name?, policy_id, expiration? } - the field is
+# policy_id (agent_policy_id is rejected by the schema validation).
 - name: List existing enrollment tokens
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/enrollment_api_keys"
@@ -424,6 +896,7 @@
     user: "kibana_system"
     password: "{{ kibana_system_password }}"
     headers:
+      kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
     return_content: yes
   register: tokens
@@ -443,14 +916,13 @@
     user: "kibana_system"
     password: "{{ kibana_system_password }}"
     headers:
+      kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
       Content-Type: "application/json"
     body_format: json
     body:
       name: "{{ enrollment_token_name }}"
-      agent_policy_id: "{{ policy_id }}"
-      metadata:
-        goad: "elastic-edr"
+      policy_id: "{{ policy_id }}"
   register: create_token
   when: not token_present
 
@@ -486,7 +958,9 @@
     msg: |
       Kibana / Fleet  : http://{{ hostvars[inventory_hostname].ansible_host }}:{{ kibana_port }}
       Elasticsearch   : http://{{ hostvars[inventory_hostname].ansible_host }}:{{ es_http_port }}
+      Fleet Server    : {{ fleet_server_host_url }} (control plane, self-signed https)
       elastic user    : {{ elastic_password }}
       kibana_system   : {{ kibana_system_password }}
-      Agent policy    : {{ fleet_policy_name }} (system + Elastic Defend {{ edr_preset }} + Sysmon/PowerShell/Defender)
-      Fleet agents    : Management -> Fleet (agents enroll via the enrollment token)
+      Agent policy    : {{ fleet_policy_name }} (system + Elastic Defend {{ edr_preset }} + full winlog)
+      Detection rules : prepackaged rules installed + Windows rules enabled
+      Fleet agents    : Management -> Fleet (windows agents enroll at :8220)
