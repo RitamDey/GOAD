@@ -1,0 +1,147 @@
+# health_assertions : stack-side verification (play 1, runs on the ELASTIC-EDR VM)
+# Asserts the deployed control plane is healthy BEFORE the windows agents
+# enroll in play 2. Four independent assertions, each with its own retry
+# budget and a loud, diagnostic failure:
+#   1. Fleet Server agent online   (the elastic-agent installed on this VM)
+#   2. Prepackaged detection rules installed + enabled
+#   3. Event data flowing into Elasticsearch (logs-*/metrics-*)
+#   4. One-screen health summary for the operator
+
+- name: Fetch enrolled Fleet agents
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/agents?perPage=100"
+    method: GET
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+    return_content: yes
+  register: fleet_agents
+  until: fleet_agents.status == 200
+  retries: 10
+  delay: 5
+  timeout: 30
+
+- name: Wait for at least one Fleet agent to come online
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/agents?perPage=100"
+    method: GET
+    user: "kibana_system"
+    password: "{{ kibana_system_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+    return_content: yes
+  register: fleet_agents_online
+  until: >-
+    fleet_agents_online.status == 200 and
+    (fleet_agents_online.json['items'] | default([]))
+      | selectattr('status', 'equalto', 'online') | list | length > 0
+  retries: "{{ health_assertions_agent_timeout_retries }}"
+  delay: 10
+  timeout: 30
+
+- name: Diagnose agent states (on online-wait failure)
+  ansible.builtin.debug:
+    msg: >-
+      Fleet agents not online after {{ health_assertions_agent_timeout_retries }} attempts.
+      Agent states: {{ fleet_agents_online.json['items'] | default([])
+      | map(attribute='status') | list }}
+      (check the Fleet Server: systemctl status elastic-agent, port {{ fleet_server_port | default(8220) }})
+  when: fleet_agents_online.attempts | default(0) | int >= health_assertions_agent_timeout_retries | int
+
+- name: Fail if no Fleet agent is online
+  ansible.builtin.fail:
+    msg: >-
+      No Fleet agent reached 'online' status. The Fleet Server agent on this VM
+      did not enroll or is not checking in - see the diagnosis above.
+  when: fleet_agents_online.attempts | default(0) | int >= health_assertions_agent_timeout_retries | int
+
+- name: Assert the Fleet Server agent is online
+  ansible.builtin.assert:
+    that:
+      - (fleet_agents_online.json['items'] | default([]))
+        | selectattr('status', 'equalto', 'online') | list | length > 0
+    fail_msg: "Fleet Server agent is not online."
+    success_msg: "Fleet Server agent online ({{ fleet_server_host_url | default('https://' ~ hostvars[inventory_hostname].ansible_host ~ ':' ~ (fleet_server_port | default(8220))) }})"
+
+- name: Check prepackaged detection rules install status
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/detection_engine/rules/prepackaged/_status"
+    method: GET
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+      kbn-xsrf: "true"
+    return_content: yes
+  register: rules_status
+  until: >-
+    rules_status.status == 200 and
+    rules_status.json.rules_installed is defined
+  retries: "{{ health_assertions_rules_retries }}"
+  delay: 10
+  timeout: 30
+
+- name: Assert prepackaged detection rules are installed
+  ansible.builtin.assert:
+    that:
+      - rules_status.json.rules_installed is defined
+      - rules_status.json.rules_installed | int > 0
+    fail_msg: >-
+      Prepackaged detection rules are not installed
+      (status {{ rules_status.status | default('n/a') }},
+      installed={{ rules_status.json.rules_installed | default('n/a') }}).
+      The detection engine install step may have failed.
+    success_msg: >-
+      Prepackaged rules installed: {{ rules_status.json.rules_installed | default(0) }}
+      ({{ rules_status.json.rules_not_installed | default(0) }} remaining)
+
+- name: Wait for agent event data to land in Elasticsearch
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/_count"
+    method: GET
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      query:
+        bool:
+          should:
+            - index_prefix: { value: "logs-" }
+            - index_prefix: { value: "metrics-" }
+  return_content: yes
+  register: es_data_count
+  until: >-
+    es_data_count.status == 200 and
+    es_data_count.json.count | default(0) | int > 0
+  retries: "{{ health_assertions_data_retries }}"
+  delay: 10
+  timeout: 30
+
+- name: Fail if no event data reached Elasticsearch
+  ansible.builtin.fail:
+    msg: >-
+      No documents found in logs-*/metrics-* after
+      {{ health_assertions_data_retries }} x 10s. The Fleet Server agent is
+      online but its data is not reaching Elasticsearch - check the Fleet
+      default output ({{ es_output_url | default('http://' ~ hostvars[inventory_hostname].ansible_host ~ ':' ~ es_http_port) }})
+      and the agent logs at /opt/Elastic/elastic-agent.
+  when: es_data_count.json.count | default(0) | int == 0
+
+- name: Show stack health summary
+  ansible.builtin.debug:
+    msg: |
+      ==================== STACK HEALTH ====================
+      Kibana / Fleet   : http://{{ hostvars[inventory_hostname].ansible_host }}:{{ kibana_port }}
+      Elasticsearch    : http://{{ hostvars[inventory_hostname].ansible_host }}:{{ es_http_port }}
+      Fleet Server     : {{ fleet_server_host_url | default('https://' ~ hostvars[inventory_hostname].ansible_host ~ ':' ~ (fleet_server_port | default(8220))) }}
+      Agents online    : {{ (fleet_agents_online.json['items'] | default([])) | selectattr('status','equalto','online') | list | length }} / {{ (fleet_agents_online.json['items'] | default([])) | length }}
+      Detection rules  : {{ rules_status.json.rules_installed | default(0) }} prepackaged installed
+      Event data       : {{ es_data_count.json.count | default(0) }} docs in logs-*/metrics-*
+      Windows agents   : enroll in the next play - their online status is
+                         asserted there (stage: verify_agents)
+      ======================================================

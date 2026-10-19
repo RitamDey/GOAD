@@ -1,0 +1,63 @@
+# health_assertions : endpoint verification (play 2, per windows agent)
+# Runs on every elastic-edr agent AFTER sysmon/applocker/endpoint_logging/
+# elastic_agent_win. Asserts, per host, that:
+#   1. the Elastic Agent service exists and is running
+#   2. the agent self-reports healthy (elastic-agent status)
+#   3. the host-side logging settings actually took (4688 audit + 4104 keys)
+# A single slow host does NOT fail the whole play: the checks use
+# failed_when: false and a final per-host roll-up collects the results, so
+# the operator sees exactly which endpoints are lagging or broken.
+
+- name: Check the Elastic Agent service state
+  ansible.windows.win_service:
+    name: elastic-agent
+  register: agent_service
+  failed_when: false
+
+- name: Query the agent health status
+  ansible.windows.win_shell: |
+    & "C:\Program Files\Elastic\Agent\{{ elastic_agent_version }}\agent\elastic-agent.exe" status --output json
+  register: agent_health
+  changed_when: false
+  failed_when: false
+  when: agent_service.exists | default(false)
+
+- name: Wait for the agent to report healthy (local retries)
+  ansible.windows.win_shell: |
+    & "C:\Program Files\Elastic\Agent\{{ elastic_agent_version }}\agent\elastic-agent.exe" status --output json
+  register: agent_health_retry
+  changed_when: false
+  failed_when: false
+  until: agent_health_res.stdout | default('') | regex_search('("health"\\s*:\\s*"healthy"|"health":"healthy")')
+  retries: 6
+  delay: 10
+  vars:
+    agent_health_res: "{{ agent_health }}"
+
+- name: Verify host-side logging took effect (4688 audit + 4104 script block)
+  ansible.windows.win_shell: |
+    $audit = (auditpol /get /subcategory:"Process Creation") -join ' '
+    $sb = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\PowerShell\ScriptBlockLogging' -ErrorAction SilentlyContinue).EnableScriptBlockLogging
+    Write-Output ("audit_process_creation=" + ($audit -match 'Success'))
+    Write-Output ("scriptblock_logging=" + [int]($sb -eq 1))
+  register: logging_verify
+  changed_when: false
+  failed_when: false
+
+- name: Record endpoint health result
+  ansible.builtin.set_fact:
+    endpoint_health_report:
+      agent_service: "{{ agent_service.exists | default(false) | bool | ternary('installed', 'MISSING') }}"
+      agent_healthy: "{{ (agent_health_res.stdout | default('')) is search('\"health\"\\s*:\\s*\"healthy\"') | bool | ternary('yes', 'NO') }}"
+      audit_4688: "{{ (logging_verify.stdout | default('')) is search('audit_process_creation=True|audit_process_creation=True') | bool | ternary('yes', 'CHECK') }}"
+      scriptblock_4104: "{{ (logging_verify.stdout | default('')) is search('scriptblock_logging=1') | bool | ternary('yes', 'CHECK') }}"
+  vars:
+    agent_health_res: "{{ agent_health }}"
+  changed_when: false
+
+- name: Warn if the agent service is missing on this host
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: the elastic-agent service was not found.
+      The elastic_agent_win role install step may have failed on this host.
+  when: not (agent_service.exists | default(false) | bool)

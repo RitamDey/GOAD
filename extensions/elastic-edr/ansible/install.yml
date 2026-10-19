@@ -1,17 +1,21 @@
 # elastic-edr extension : install playbook
 # Play 1 : deploy the Elastic Stack (ES 8.x + Kibana + Fleet) + a dedicated
-#          Fleet Server on :8220 + EDR policies + detection rules + token
-# Play 2 : install Sysmon + AppLocker audit policy + host-side logging
-#          (4688/4104) + the Elastic Agent on every domain windows machine,
-#          and enroll it in the Fleet Server using the token from play 1.
+#          Fleet Server on :8220 + EDR policies + detection rules + token,
+#          then assert the control plane is healthy (agents online, rules
+#          installed, event data flowing).
+# Play 2 : install the AppLocker audit policy + host-side logging (4688/4104)
+#          + Sysmon + the Elastic Agent on every domain windows machine and
+#          enroll it in the Fleet Server, then assert each endpoint came up
+#          healthy (per-host roll-up, no single slow host fails the play).
 
 - name: Install Elastic Stack (EDR)
   hosts: elastic-edr_server
   become: yes
   roles:
     - { role: 'elastic_stack', tags: 'elastic_stack' }
+    - { role: 'health_assertions', tags: 'health_assertions', stage: 'verify_stack' }
 
-- name: Install Sysmon + Elastic Agent (Fleet / EDR) on windows machines
+- name: Install AppLocker + Sysmon + Elastic Agent (Fleet / EDR) on windows machines
   hosts: elastic-edr_agents
   pre_tasks:
     - name: Read enrollment token from the elastic-edr machine
@@ -36,3 +40,4 @@
     - { role: 'endpoint_logging', tags: 'endpoint_logging' }
     - { role: 'sysmon', tags: 'agent' }
     - { role: 'elastic_agent_win', tags: 'agent' }
+    - { role: 'health_assertions', tags: 'health_assertions', stage: 'verify_agents' }

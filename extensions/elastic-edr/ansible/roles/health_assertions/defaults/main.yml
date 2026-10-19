@@ -1,0 +1,15 @@
+# health_assertions role defaults
+#
+# Post-install validation for the elastic-edr extension: instead of trusting
+# that every API call succeeded, this role polls the deployed state and fails
+# loudly with a per-item diagnosis when something is not healthy.
+#
+# File layout (task includes, so each stage stays independently re-runnable):
+#   tasks/main.yml               - dispatcher (see the stage var)
+#   tasks/verify_stack.yml       - play 1: stack-side assertions
+#   tasks/verify_agents.yml      - play 2: per-windows-host agent assertions
+#
+# Tunables:
+health_assertions_agent_timeout_retries: 12   # x10s = 2 min for agents to come online
+health_assertions_data_retries: 18            # x10s = 3 min for first docs to land
+health_assertions_rules_retries: 10           # x10s = engine rule finalization
