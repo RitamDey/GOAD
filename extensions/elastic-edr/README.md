@@ -131,21 +131,25 @@ this extension **enables the event types most community detections rely on**:
 | 17/18 PipeEvent | off | **on** - suspicious pipes (psexec/paexec/remcom/csexec classes, lsass, status_*) | named-pipe C2 detection |
 | 7 ImageLoad | off | **on** - loads from user paths/ProgramData/Temp + credential-DLLs | DLL-sideloading telemetry |
 | 9 RawAccessRead | off | **on** - device path reads | raw-disk access (ACL bypass) |
+| 25 ProcessTampering | commented out | **on** - collect all ProcessTampering events without local exclusions | process hollowing / image tampering telemetry |
 
 Already on in stock v74 (kept as-is): 1 (process), 2 (file time), 3 (network),
 5 (terminate), 6 (driver), 8 (remote thread), 11 (file create),
 12/13/14 (registry), 15 (ADS), 16, 19 (WMI), 22 (DNS).
 
-Event ID 25 (ProcessTampering) is **not collected by the shipped config**: its
-example RuleGroup remains commented out because this extension has not selected
-and validated a low-noise filter for that event. Do not assume ProcessTampering
-telemetry exists until an operator deliberately enables and validates a rule.
+Event ID 25 (ProcessTampering) is enabled by this extension with an empty
+`onmatch="include"` filter, which collects all ProcessTampering events. The
+event itself is focused on process-image tampering behavior, so the default
+does not apply an unvalidated image exclusion such as the commented SwiftOnSecurity
+Edge example. This favors coverage in a threat-research lab. Add a narrow
+exclusion only if a supported workload demonstrates a benign match and the
+exclusion has been validated against the pinned Sysmon binary.
 
 The scoping in each section keeps volume manageable (stock v74's warning about
 event 10 applies only if you open it up to all targets). To tune further, edit
-the XML in the repo and reload on hosts with
-`sysmon64.exe -c c:\sysmon\sysmonconfig-export.xml` (the install role only
-runs the initial `-i` on first install).
+the XML in the repo and re-provision `elastic-edr`: first installation uses
+`-i`, and the Sysmon role applies `-c` to existing installations when the
+shipped configuration file changes.
 
 
 ### AD DS SACL prerequisite (Events 4662 and 5136)
