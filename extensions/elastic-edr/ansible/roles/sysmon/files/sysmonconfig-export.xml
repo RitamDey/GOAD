@@ -254,7 +254,7 @@
 	</RuleGroup>
 
 	<!--SYSMON EVENT ID 3 : NETWORK CONNECTION INITIATED [NetworkConnect]-->
-		<!--COMMENT:	By default this configuration takes a very conservative approach to network logging, limited to only extremely high-signal events.-->
+		<!--COMMENT:	Default GOAD posture uses a high-signal process/path-and-port intersection; sysmon_network_telemetry can select broader collection.-->
 		<!--COMMENT:	[ https://attack.mitre.org/wiki/Command_and_Control ] [ https://attack.mitre.org/wiki/Exfiltration ] [ https://attack.mitre.org/wiki/Lateral_Movement ] -->
 		<!--TECHNICAL:	For the DestinationHostname, Sysmon uses the GetNameInfo API, which will often not have any information, and may just be a CDN. This is NOT reliable for filtering.-->
 		<!--TECHNICAL:	For the DestinationPortName, Sysmon uses the GetNameInfo API for the friendly name of ports you see in logs.-->
@@ -263,6 +263,7 @@
 		<!-- https://www.first.org/resources/papers/conf2017/APT-Log-Analysis-Tracking-Attack-Tools-by-Audit-Policy-and-Sysmon.pdf -->
 
 		<!--DATA: UtcTime, ProcessGuid, ProcessId, Image, User, Protocol, Initiated, SourceIsIpv6, SourceIp, SourceHostname, SourcePort, SourcePortName, DestinationIsIpV6, DestinationIp, DestinationHostname, DestinationPort, DestinationPortName-->
+{% if (sysmon_network_telemetry | default('high_signal')) == 'high_signal' %}
 	<RuleGroup name="" groupRelation="or">
 		<NetworkConnect onmatch="include">
 			<!--Suspicious sources for network-connecting binaries-->
@@ -338,9 +339,9 @@
 			<DestinationPort name="Proxy" condition="is">3128</DestinationPort> <!--Socks proxy port | Credit @ion-storm-->
 			<DestinationPort name="Proxy" condition="is">8080</DestinationPort> <!--Socks proxy port | Credit @ion-storm-->
 			<!--Ports: Tor-->
-			<DestinationPort name="Tor" condition="is">1723</DestinationPort> <!--Tor protocol [ https://attack.mitre.org/wiki/Technique/T1090 ] | Credit @ion-storm-->
-			<DestinationPort name="Tor" condition="is">9001</DestinationPort> <!--Tor protocol [ http://www.computerworlduk.com/tutorial/security/tor-enterprise-2016-blocking-malware-darknet-use-rogue-nodes-3633907/ ] -->
-			<DestinationPort name="Tor" condition="is">9030</DestinationPort> <!--Tor protocol [ http://www.computerworlduk.com/tutorial/security/tor-enterprise-2016-blocking-malware-darknet-use-rogue-nodes-3633907/ ] -->
+			<DestinationPort name="PPTP" condition="is">1723</DestinationPort> <!--PPTP control-port heuristic; not proof of application protocol-->
+			<DestinationPort name="TorPort9001" condition="is">9001</DestinationPort> <!--Tor-associated port heuristic; not proof of Tor protocol-->
+			<DestinationPort name="TorPort9030" condition="is">9030</DestinationPort> <!--Tor-associated port heuristic; not proof of Tor protocol-->
 		</NetworkConnect>
 	</RuleGroup>
 
@@ -360,8 +361,14 @@
 			<DestinationIp condition="begin with">fe80:0:0:0</DestinationIp> <!--Credit @ITProPaul-->
 		</NetworkConnect>
 	</RuleGroup>
+{% else %}
+	<RuleGroup name="GOAD - Broad NetworkConnect" groupRelation="or">
+		<!-- An empty exclude list retains all Event ID 3 events. -->
+		<NetworkConnect onmatch="exclude" />
+	</RuleGroup>
+{% endif %}
 
-	<!--SYSMON EVENT ID 4 : RESERVED FOR SYSMON SERVICE STATUS MESSAGES-->
+<!--SYSMON EVENT ID 4 : RESERVED FOR SYSMON SERVICE STATUS MESSAGES-->
 
 		<!--DATA: UtcTime, State, Version, SchemaVersion-->
 		<!--Cannot be filtered.-->
@@ -402,22 +409,27 @@
 		<!--COMMENT:	[ https://attack.mitre.org/wiki/Technique/T1073 ] [ https://attack.mitre.org/wiki/Technique/T1038 ] [ https://attack.mitre.org/wiki/Technique/T1034 ] -->
 
 		<!--DATA: UtcTime, ProcessGuid, ProcessId, Image, ImageLoaded, Hashes, Signed, Signature, SignatureStatus-->
-	<RuleGroup name="" groupRelation="or">
+	<RuleGroup name="GOAD - ImageLoad" groupRelation="or">
 		<ImageLoad onmatch="include">
-			<!--GOAD elastic-edr: enabled for DLL-sideloading telemetry.
-			Scoped to unsigned/system-path DLL loads OUTSIDE the standard image
-			locations + suspicious names, to keep volume manageable.-->
-			<Image condition="begin with">C:\Users\</Image>
-			<Image condition="begin with">C:\ProgramData\</Image>
-			<ImageLoaded condition="contains">\Temp\</ImageLoaded>
-			<ImageLoaded condition="end with">mscorwks.dll</ImageLoaded>
-			<ImageLoaded condition="end with">clr.dll</ImageLoaded>
-			<ImageLoaded condition="end with">samlib.dll</ImageLoaded>
-			<ImageLoaded condition="end with">vaultcli.dll</ImageLoaded>
+			<!-- Path-based telemetry, not a signature/unsigned-image filter. -->
+			<Rule name="DLL from user-writable path" groupRelation="or">
+				<ImageLoaded condition="begin with">C:\Users\</ImageLoaded>
+				<ImageLoaded condition="begin with">C:\ProgramData\</ImageLoaded>
+				<ImageLoaded condition="contains">\Temp\</ImageLoaded>
+			</Rule>
+			<!-- Different fields are ANDed; values of the same field are alternatives. -->
+			<Rule name="Selected DLL names from user-writable processes" groupRelation="and">
+				<Image condition="begin with">C:\Users\</Image>
+				<Image condition="begin with">C:\ProgramData\</Image>
+				<ImageLoaded condition="end with">mscorwks.dll</ImageLoaded>
+				<ImageLoaded condition="end with">clr.dll</ImageLoaded>
+				<ImageLoaded condition="end with">samlib.dll</ImageLoaded>
+				<ImageLoaded condition="end with">vaultcli.dll</ImageLoaded>
+			</Rule>
 		</ImageLoad>
 	</RuleGroup>
 
-	<!--SYSMON EVENT ID 8 : REMOTE THREAD CREATED [CreateRemoteThread]-->
+<!--SYSMON EVENT ID 8 : REMOTE THREAD CREATED [CreateRemoteThread]-->
 		<!--COMMENT:	Monitor for processes injecting code into other processes. Often used by malware to cloak their actions. Also when Firefox loads Flash.
 		[ https://attack.mitre.org/wiki/Technique/T1055 ] -->
 
@@ -930,6 +942,7 @@
 			<QueryName condition="end with">.msftncsi.com</QueryName> <!--Microsoft proxy detection | Microsoft default exclusion-->
 			<QueryName condition="is">..localmachine</QueryName>
 			<QueryName condition="is">localhost</QueryName>
+{% if (sysmon_dns_telemetry | default('filtered')) == 'filtered' %}
 			<!--Microsoft-->
 			<QueryName condition="end with">-pushp.svc.ms</QueryName> <!--Microsoft: Doesn't appear to host customer content or subdomains-->
 			<QueryName condition="end with">.b-msedge.net</QueryName> <!--Microsoft: Doesn't appear to host customer content or subdomains-->
@@ -1142,6 +1155,7 @@
 			<QueryName condition="is">status.rapidssl.com</QueryName>
 			<QueryName condition="is">status.thawte.com</QueryName>
 			<QueryName condition="is">ocsp.int-x3.letsencrypt.org</QueryName>
+{% endif %}
 		</DnsQuery>
 	</RuleGroup>
 

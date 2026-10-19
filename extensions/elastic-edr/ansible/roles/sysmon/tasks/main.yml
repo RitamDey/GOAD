@@ -14,10 +14,17 @@
     src: "{{ sysmon_install_location }}/{{ sysmon_download_file }}{{ file_ext }}"
     dest: "{{ sysmon_install_location }}"
 
-- name: Copy sysmon config
-  win_copy:
-    src: sysmonconfig-export.xml
-    dest: c:\sysmon\sysmonconfig-export.xml
+- name: Validate Sysmon telemetry profiles
+  ansible.builtin.assert:
+    that:
+      - sysmon_network_telemetry | default('high_signal') in ['high_signal', 'broad']
+      - sysmon_dns_telemetry | default('filtered') in ['filtered', 'broad']
+    fail_msg: "Sysmon profiles must be network=high_signal|broad and dns=filtered|broad."
+
+- name: Render Sysmon configuration for selected telemetry profiles
+  win_template:
+    src: "{{ role_path }}/files/sysmonconfig-export.xml"
+    dest: c:\\sysmon\\sysmonconfig-export.xml
   register: sysmon_config_copy
 
 # Determine whether Sysmon is installed. A missing service is expected on a

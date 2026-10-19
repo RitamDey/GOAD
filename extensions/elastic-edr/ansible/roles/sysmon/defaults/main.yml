@@ -7,3 +7,11 @@
 sysmon_install_location: "c:\\sysmon"
 sysmon_download_file: Sysmon
 file_ext: .zip
+
+# Sysmon telemetry-volume profiles. Defaults keep collection conservative.
+# high_signal = Event ID 3 needs both a listed process/path and listed port.
+# broad       = all Event ID 3 network connections (higher volume).
+sysmon_network_telemetry: high_signal
+# filtered = inherited Microsoft/vendor/CDN/advertising DNS exclusions retained.
+# broad    = remove those domain exclusions; keep preceding local/reverse-DNS noise.
+sysmon_dns_telemetry: filtered

@@ -120,22 +120,24 @@ DC03 runs the `win2016-server-x64-template`.
 
 Sysmon only logs the event types its XML config tells it to log. This
 extension ships a **tuned SwiftOnSecurity sysmon-config v74**
-(`ansible/roles/sysmon/files/sysmonconfig-export.xml`), copied to
-`c:\sysmon\sysmonconfig-export.xml` on every agent. Compared to stock v74,
-this extension **enables the event types most community detections rely on**:
+(`ansible/roles/sysmon/files/sysmonconfig-export.xml`), rendered for the selected
+profile and applied to every endpoint. It enables selected high-value events
+while documenting where filters intentionally limit coverage:
 
 | Sysmon event | stock v74 | shipped by this extension | what it gives you |
 |---|---|---|---|
 | 10 ProcessAccess | off | **on** - scoped to lsass/winlogon/MsMpEng targets, dump-tool sources and dump-capability access masks | credential-dump hunting (mimikatz-class) |
 | 23 FileDelete | commented out | **on** - user paths, ProgramData, shadow copies, .temp | ransomware / dropper-cleanup tells |
 | 17/18 PipeEvent | off | **on** - suspicious pipes (psexec/paexec/remcom/csexec classes, lsass, status_*) | named-pipe C2 detection |
-| 7 ImageLoad | off | **on** - loads from user paths/ProgramData/Temp + credential-DLLs | DLL-sideloading telemetry |
+| 7 ImageLoad | off | **on** - writable-path DLL loads + selected DLL names under writable process paths | suspicious image-load telemetry (not an unsigned-DLL detector) |
 | 9 RawAccessRead | off | **on** - device path reads | raw-disk access (ACL bypass) |
 | 25 ProcessTampering | commented out | **on** - collect all ProcessTampering events without local exclusions | process hollowing / image tampering telemetry |
 
-Already on in stock v74 (kept as-is): 1 (process), 2 (file time), 3 (network),
-5 (terminate), 6 (driver), 8 (remote thread), 11 (file create),
-12/13/14 (registry), 15 (ADS), 16, 19 (WMI), 22 (DNS).
+Other stock-v74 events kept as-is include 1 (process), 2 (file time), 4 (Sysmon
+service status, unfilterable), 5 (terminate), 6 (driver), 8 (remote thread),
+11 (file create), 12/13/14 (registry), 15 (ADS), 16, 19 (WMI) and 22 (DNS).
+Events 3 and 22 are enabled in the default profile, but neither provides complete
+network-connection or DNS-query coverage.
 
 Event ID 25 (ProcessTampering) is enabled by this extension with an empty
 `onmatch="include"` filter, which collects all ProcessTampering events. The
@@ -145,11 +147,33 @@ Edge example. This favors coverage in a threat-research lab. Add a narrow
 exclusion only if a supported workload demonstrates a benign match and the
 exclusion has been validated against the pinned Sysmon binary.
 
-The scoping in each section keeps volume manageable (stock v74's warning about
-event 10 applies only if you open it up to all targets). To tune further, edit
-the XML in the repo and re-provision `elastic-edr`: first installation uses
-`-i`, and the Sysmon role applies `-c` to existing installations when the
-shipped configuration file changes.
+**Event ID 3 — network connections:** `sysmon_network_telemetry: high_signal`
+is the default intersection filter. An included event must match a configured
+process image/path **and** a configured destination port; alternatives within
+one field are ORed, different fields are combined, and excludes suppress
+matching events. This can miss a listed process using ordinary HTTPS/443 or a
+normal process connecting to a listed port. For infrastructure hunts, set
+`sysmon_network_telemetry: broad` in inventory/instance variables and
+re-provision. Broad mode removes the process/port filter and logs all Event ID 3
+connections; expect higher volume.
+
+**Event ID 22 — DNS:** `sysmon_dns_telemetry: filtered` keeps the inherited
+Microsoft/platform, third-party, CDN and advertising-domain exclusions.
+`sysmon_dns_telemetry: broad` removes that long domain-exclusion list while
+retaining preceding local/reverse-DNS/noise exclusions. This helps surface
+tenant-specific or attacker-controlled names under otherwise excluded service
+suffixes. Filtering occurs on the endpoint: excluded events cannot be recovered
+later. Measure volume and disk growth before leaving broad profiles enabled.
+
+**Event ID 7 — image loads:** path-based telemetry, not an unsigned-DLL test.
+It captures DLL loads from user-writable paths regardless of loader path, plus
+selected DLL-name matches when the loader is under Users/ProgramData. Port 1723
+is labeled PPTP control; ports 9001/9030 are Tor-associated port heuristics, not
+proof of the protocol.
+
+The selected rendered configuration is installed with `-i` on fresh hosts;
+on existing Sysmon installations, the role applies `-c` whenever the rendered
+configuration changes. Set profile overrides and re-provision `elastic-edr`.
 
 
 ### AD DS SACL prerequisite (Events 4662 and 5136)
