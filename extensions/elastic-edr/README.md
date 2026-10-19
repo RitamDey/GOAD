@@ -81,7 +81,7 @@ Kibana on 5601 - only the agent control plane moves to 8220.
 
 | component                | version   | where |
 |--------------------------|-----------|-------|
-| Elastic stack            | 8.19.23   | `elastic_stack/defaults` (`elastic_repo_version`, exact apt suite) |
+| Elastic stack            | 8.19.23   | `elastic_stack/defaults` (`elastic_stack_version`, exact apt pin from the `8.x` suite) |
 | Elastic agent (windows)  | 8.19.23   | `elastic_agent_win/defaults` (MSI) |
 | Elastic agent (linux, Fleet Server) | 8.19.23 | `elastic_stack/defaults` (`elastic_agent_linux_version`, tarball) |
 | Integration: system      | 2.6.3     | `elastic_stack/templates/kibana.yml` (pinned, EPR-scoped to Kibana 8.19.23) |
@@ -92,10 +92,13 @@ Kibana on 5601 - only the agent control plane moves to 8220.
 | Sysmon config            | v74       | bundled `sysmon/files/sysmonconfig-export.xml` (latest upstream release) |
 | Defend preset            | EDRComplete | `elastic_stack/defaults` (`edr_preset`) |
 
-Everything is pinned to an exact version: the stack (single-version apt suite),
-both agents, the four Fleet integration packages (from the Elastic Package
-Registry, scoped to the pinned Kibana), and the Sysmon binary (sha256-locked).
-To upgrade, bump `elastic_repo_version`, the two agent versions and the four
+Everything is pinned to an exact version: the stack (exact apt pin installed
+from the rolling `8.x` suite - only `8.x` exists as an apt suite, per-patch
+suites are 404), both agents, the four Fleet integration packages (from the
+Elastic Package Registry, scoped to the pinned Kibana), and the Sysmon binary
+(sha256-locked).
+To upgrade, bump `elastic_stack_version` (NOT the apt suite - `elastic_repo_version`
+stays `8.x`), the two agent versions and the four
 package versions in `kibana.yml` together - see the comments in
 `elastic_stack/defaults/main.yml`.
 

@@ -47,18 +47,27 @@
     path: "{{ state_dir }}/bootstrap-password"
   register: bootstrap_file
 
-# Fresh install : apt prints the generated elastic superuser password on first setup.
+# Fresh install : apt prints the generated elastic superuser password on first
+# setup - but ONLY when apt actually installs. On a re-run with a wiped state
+# dir (ES already installed), apt is idempotent and prints no password line:
+# the extraction below then yields an empty string, the persist task skips, and
+# the probe-first auth block further down RECOVERS the run (probe 200 -> the
+# lab password from the previous install still works, bootstrap never needed).
+# Exact-version pin via apt's name==version syntax (the 8.x suite carries every
+# historical 8.y.z - see defaults/main.yml for the suite vs version split).
 - name: Install Elasticsearch (fresh, security autoconfig)
   ansible.builtin.apt:
-    name: elasticsearch
+    name: "elasticsearch={{ elastic_stack_version }}"
     state: present
     update_cache: yes
   register: es_install
   when: not bootstrap_file.stat.exists
 
-- name: Extract generated elastic bootstrap password
+- name: Extract generated elastic bootstrap password (tolerates idempotent re-runs)
   ansible.builtin.set_fact:
-    es_bootstrap_password: "{{ es_install.stdout | regex_search('elastic built-in superuser is : (\\S+)', '\\1') | first }}"
+    es_bootstrap_password: >-
+      {{ (es_install.stdout | default('')
+          | regex_search('elastic built-in superuser is : (\S+)', '\1')) | default([''], true) | first }}
   when: not bootstrap_file.stat.exists
 
 - name: Persist bootstrap password for re-runs
@@ -68,7 +77,8 @@
     mode: "0640"
     owner: root
     group: root
-  when: not bootstrap_file.stat.exists
+  when: >-
+    not bootstrap_file.stat.exists and (es_bootstrap_password | default('') | length) > 0
 
 - name: Read stored bootstrap password
   ansible.builtin.slurp:
@@ -114,11 +124,89 @@
     name: elasticsearch
     state: restarted
 
-- name: Wait for Elasticsearch to answer ({{ es_http_port }})
+# Re-run safe auth (a stored bootstrap password is INVALID on re-runs):
+# the first run rotates elastic's password to elastic_password, so on any
+# later run the stored bootstrap value no longer authenticates. Probe both:
+#   1. wait for the port to answer at all (200 security-off / 401 security-on)
+#   2. try the LAB password (elastic_password) against _cluster/health
+#   3. on 401, try the STORED/FRESH bootstrap password the same way
+#   4. effective password = whichever authenticated; loud fail with
+#      remediation if NEITHER does
+# Fresh run  -> lab 401, bootstrap 200 -> bootstrap path -> rotation runs
+# Re-run     -> lab 200 -> lab path -> rotation SKIPPED (idempotent)
+# Wiped state dir, ES installed -> lab 200 -> lab path (bootstrap not needed;
+#             apt printed no password line, extraction yields '' - recovered)
+# Both stale -> lab 401 + bootstrap 401 -> bespoke failure with remediation
+- name: Wait for Elasticsearch to answer ({{ es_http_port }}, any auth state)
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/"
+    status_code: [200, 401]
+  register: es_port_probe
+  failed_when: false
+  until: es_port_probe.status in [200, 401]
+  retries: 30
+  delay: 10
+  timeout: 30
+
+- name: Probe elastic auth with the lab password
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/_cluster/health"
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    status_code: [200, 401]
+  register: es_auth_probe
+  failed_when: false
+  until: es_auth_probe.status in [200, 401]
+  retries: 10
+  delay: 5
+  timeout: 30
+
+- name: Probe elastic auth with the bootstrap password
   ansible.builtin.uri:
     url: "http://localhost:{{ es_http_port }}/_cluster/health"
     user: "elastic"
     password: "{{ es_bootstrap_password }}"
+    status_code: [200, 401]
+  register: es_bootstrap_probe
+  failed_when: false
+  until: es_bootstrap_probe.status in [200, 401]
+  retries: 3
+  delay: 5
+  timeout: 30
+  when:
+    - (es_auth_probe.status | default(0)) != 200
+    - (es_bootstrap_password | default('')) | length > 0
+
+# Both credentials rejected (or no bootstrap at all): fail LOUD with the
+# remediation instead of a generic retry-exhausted health-check error.
+- name: Fail with remediation if neither the lab nor the bootstrap password authenticates
+  ansible.builtin.fail:
+    msg: >-
+      Cannot authenticate to Elasticsearch as 'elastic': the lab password
+      (elastic_password) returned HTTP {{ es_auth_probe.status | default('n/a') }}
+      and the bootstrap password {{ 'is not available' if (es_bootstrap_password | default('')) | length == 0 else 'returned HTTP ' ~ (es_bootstrap_probe.status | default('n/a')) }}.
+      Remediation, pick one:
+      (1) reset the elastic password and re-run:
+          /usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic -i
+          then set elastic_password (elastic_stack/defaults or instance vars) to that value;
+      (2) if you know the current elastic password, write it into
+          elastic_password and re-run;
+      (3) on a genuinely fresh first run, delete {{ state_dir }} and re-run the
+          playbook so the bootstrap password is re-extracted from the apt output.
+  when: >-
+    (es_auth_probe.status | default(0)) != 200
+    and (es_bootstrap_probe.status | default(0)) != 200
+
+- name: Resolve the effective elastic password (lab password first, bootstrap fallback)
+  ansible.builtin.set_fact:
+    es_effective_password: >-
+      {{ elastic_password if (es_auth_probe.status | default(0)) == 200 else es_bootstrap_password }}
+
+- name: Wait for Elasticsearch cluster health ({{ es_http_port }})
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/_cluster/health"
+    user: "elastic"
+    password: "{{ es_effective_password }}"
     status_code: 200
   register: es_health
   until: es_health.status == 200
@@ -127,12 +215,15 @@
   timeout: 30
 
 # Set known built-in user passwords so Kibana + Fleet API can authenticate.
+# Skipped when the lab password already authenticates (re-runs): the rotation
+# already happened on the first run, and re-authenticating with the stored
+# bootstrap value would 401. Fresh runs take the bootstrap path.
 - name: Set elastic superuser password
   ansible.builtin.uri:
     url: "http://localhost:{{ es_http_port }}/_security/user/elastic/_password"
     method: PUT
     user: "elastic"
-    password: "{{ es_bootstrap_password }}"
+    password: "{{ es_effective_password }}"
     body_format: json
     body:
       password: "{{ elastic_password }}"
@@ -140,6 +231,7 @@
   until: set_elastic_pw.status in [200]
   retries: 5
   delay: 5
+  when: (es_auth_probe.status | default(0)) != 200
 
 - name: Set kibana_system password
   ansible.builtin.uri:
@@ -155,10 +247,10 @@
   retries: 5
   delay: 5
 
-# Install Kibana (serves Fleet on 5601, http).
+# Install Kibana (serves Fleet on 5601, http). Same exact-version pin.
 - name: Install Kibana
   ansible.builtin.apt:
-    name: kibana
+    name: "kibana={{ elastic_stack_version }}"
     state: present
     update_cache: yes
 

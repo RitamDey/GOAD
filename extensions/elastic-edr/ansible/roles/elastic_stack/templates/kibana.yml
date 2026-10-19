@@ -28,7 +28,9 @@ xpack.fleet.agents.elasticsearch.hosts:
 # pinned Kibana 8.19.23 (EPR scopes its catalog to the Kibana version, so these
 # numbers are stable for this stack). The runtime package-policy tasks resolve
 # their versions from the same registry, so they stay coherent automatically.
-# To upgrade the stack: bump elastic_repo_version, the two agent versions, and
+# To upgrade the stack: bump elastic_stack_version (the exact apt pin in
+# elastic_stack/defaults/main.yml - the apt suite elastic_repo_version stays
+# "8.x"), the two agent versions, and
 # these four package versions together (query epr.elastic.co
 # /search?package=<name>&kibana.version=<new> for the new numbers).
 xpack.fleet.packages:
