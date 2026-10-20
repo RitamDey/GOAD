@@ -42,6 +42,41 @@
   changed_when: false
   failed_when: false
 
+- name: Verify AppLocker event channels and effective audit-only posture
+  ansible.windows.win_shell: |
+    $channels = @(
+      'Microsoft-Windows-AppLocker/EXE and DLL',
+      'Microsoft-Windows-AppLocker/MSI and Script',
+      'Microsoft-Windows-AppLocker/Packaged app-Execution',
+      'Microsoft-Windows-AppLocker/Packaged app-Deployment'
+    )
+    $enabledCount = 0
+    foreach ($channel in $channels) {
+      $log = Get-WinEvent -ListLog $channel -ErrorAction SilentlyContinue
+      if ($null -ne $log -and $log.IsEnabled) { $enabledCount++ }
+    }
+    $policyOk = $false
+    $dllState = 'unknown'
+    try {
+      [xml]$policy = Get-AppLockerPolicy -Effective -Xml
+      $bad = @()
+      foreach ($type in @('Exe', 'Msi', 'Script', 'Appx')) {
+        $collections = @($policy.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq $type })
+        if ($collections.Count -ne 1 -or $collections[0].EnforcementMode -ne 'AuditOnly') { $bad += $type }
+      }
+      $dllCollections = @($policy.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq 'Dll' })
+      $dllState = if ($dllCollections.Count -gt 0 -and $dllCollections[0].EnforcementMode -eq 'AuditOnly') { 'enabled' } elseif ($dllCollections.Count -eq 0) { 'disabled' } else { 'not-audit-only' }
+      if ("{{ applocker_enable_dll_collection | default(false) | string | lower }}" -eq 'true' -and $dllState -ne 'enabled') { $bad += 'Dll' }
+      if ($dllState -eq 'not-audit-only') { $bad += 'Dll-mode' }
+      $policyOk = $bad.Count -eq 0
+    } catch { $policyOk = $false }
+    Write-Output ("applocker_event_channels={0}/{1}" -f $enabledCount, $channels.Count)
+    Write-Output ("applocker_policy_audit_only=" + [int]$policyOk)
+    Write-Output ("applocker_dll_collection=" + $dllState)
+  register: applocker_readiness
+  changed_when: false
+  failed_when: false
+
 - name: Record endpoint health result
   ansible.builtin.set_fact:
     endpoint_health_report:
@@ -49,6 +84,9 @@
       agent_healthy: "{{ (agent_health_retry.stdout | default('')) is search('\"health\"\\s*:\\s*\"healthy\"') | bool | ternary('yes', 'NO') }}"
       audit_4688: "{{ (logging_verify.stdout | default('')) is search('audit_process_creation=True') | bool | ternary('yes', 'CHECK') }}"
       scriptblock_4104: "{{ (logging_verify.stdout | default('')) is search('scriptblock_logging=1') | bool | ternary('yes', 'CHECK') }}"
+      applocker_channels: "{{ (applocker_readiness.stdout | default('')) is search('applocker_event_channels=4/4') | bool | ternary('4/4', 'CHECK') }}"
+      applocker_policy: "{{ (applocker_readiness.stdout | default('')) is search('applocker_policy_audit_only=1') | bool | ternary('yes', 'CHECK') }}"
+      applocker_dll_collection: "{{ (applocker_readiness.stdout | default('')) is search('applocker_dll_collection=enabled') | bool | ternary('enabled', 'off/unknown') }}"
   changed_when: false
 
 - name: Warn if the agent service is missing on this host

@@ -15,3 +15,7 @@
 
 applocker_policy_file: applocker-audit.xml
 applocker_install_location: "c:\\applocker"
+
+# Optional DLL collection. This checks every DLL load and may add significant
+# evaluation overhead and event volume; enable only when the lab has capacity.
+applocker_enable_dll_collection: false

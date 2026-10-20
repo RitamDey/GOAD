@@ -18,11 +18,14 @@
       ================== ENDPOINT ROLL-UP ==================
       {% for host in endpoint_rollup | default([]) %}
       {% set r = hostvars[host].endpoint_health_report %}
-      {{ '%-14s' | format(host) }} agent={{ '%-8s' | format(r.agent_service | default('?')) }} healthy={{ '%-4s' | format(r.agent_healthy | default('?')) }} audit_4688={{ '%-6s' | format(r.audit_4688 | default('?')) }} scriptblock_4104={{ r.scriptblock_4104 | default('?') }}
+      {{ '%-14s' | format(host) }} agent={{ '%-8s' | format(r.agent_service | default('?')) }} healthy={{ '%-4s' | format(r.agent_healthy | default('?')) }} audit_4688={{ '%-6s' | format(r.audit_4688 | default('?')) }} scriptblock_4104={{ r.scriptblock_4104 | default('?') }} applocker_channels={{ r.applocker_channels | default('?') }} AppLocker_audit={{ r.applocker_policy | default('?') }} DLLs={{ r.applocker_dll_collection | default('?') }}
       {% endfor %}
       ======================================================
       legend: healthy=yes/NO - agent self-report; audit_4688 /
       scriptblock_4104 = yes/CHECK - host-side logging state;
+      applocker_channels = 4/4 or CHECK - local AppLocker Event Log channels;
+      AppLocker_audit = yes/CHECK - effective policy is audit-only;
+      DLLs = enabled/off/unknown - optional DLL collection posture;
       agent=installed/MISSING - the elastic-agent service.
       hosts reported: {{ endpoint_rollup | default([]) | length }}
 
@@ -32,6 +35,17 @@
       {{ endpoint_rollup | default([])
          | map('extract', hostvars, ['endpoint_health_report'])
          | selectattr('agent_healthy', 'equalto', 'NO') | list | length }}
+
+- name: Count hosts with AppLocker readiness gaps
+  ansible.builtin.set_fact:
+    endpoint_rollup_applocker_unready: >-
+      {{ (endpoint_rollup | default([])
+          | map('extract', hostvars, ['endpoint_health_report'])
+          | rejectattr('applocker_channels', 'equalto', '4/4') | list | length)
+         +
+         (endpoint_rollup | default([])
+          | map('extract', hostvars, ['endpoint_health_report'])
+          | rejectattr('applocker_policy', 'equalto', 'yes') | list | length) }}
 
 - name: Count hosts missing the agent service
   ansible.builtin.set_fact:
@@ -51,9 +65,11 @@
 - name: Warn about unhealthy endpoints (non-fatal, per design)
   ansible.builtin.debug:
     msg: >-
-      {{ endpoint_rollup_unhealthy }} endpoint(s) not yet healthy and
-      {{ endpoint_rollup_missing }} endpoint(s) missing the agent service -
-      see the table above; a lagging host usually just needs a re-run.
+      {{ endpoint_rollup_unhealthy }} endpoint(s) not yet healthy,
+      {{ endpoint_rollup_missing }} endpoint(s) missing the agent service, and
+      {{ endpoint_rollup_applocker_unready | default(0) }} AppLocker readiness
+      check(s) needing attention - see the table above; these checks do not
+      block Windows execution or simulate attack activity.
   when:
     - (endpoint_rollup | default([])) | length > 0
-    - (endpoint_rollup_unhealthy | default(0)) | int > 0 or (endpoint_rollup_missing | default(0)) | int > 0
+    - (endpoint_rollup_unhealthy | default(0)) | int > 0 or (endpoint_rollup_missing | default(0)) | int > 0 or (endpoint_rollup_applocker_unready | default(0)) | int > 0

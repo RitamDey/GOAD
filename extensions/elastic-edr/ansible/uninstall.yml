@@ -9,8 +9,8 @@
 # What IS removed:
 #   - Elastic Agent (service + enrollment + C:\Program Files\Elastic\Agent)
 #   - Sysmon (sysmon64 service, c:\sysmon)
-#   - the AppLocker policy (restored to a default allow-everyone EXE policy)
-#     and the AppIDSvc startup change (back to Manual, the Windows default)
+#   - the AppLocker policy (restored to a default allow-everyone EXE policy),
+#     AppIDSvc startup changed back to Manual, and AppLocker log-channel states
 #   - ALL audit subcategories the endpoint_logging role enabled (27 + the 9
 #     extras, disabled again by name)
 #   - endpoint logging registry values restored from the pre-install snapshot
@@ -109,6 +109,30 @@
     - name: Restore AppIDSvc to Manual (Windows default)
       ansible.windows.win_shell: Set-Service -Name AppIDSvc -StartupType Manual
       changed_when: false
+      failed_when: false
+
+    - name: Restore original AppLocker Event Log channel states
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $statePath = 'C:\ProgramData\GOAD-Elastic-EDR\applocker-event-channel-backup.json'
+        if (-not (Test-Path -LiteralPath $statePath)) {
+          Write-Output 'No AppLocker event-channel snapshot; leaving channel state unchanged.'
+          exit 0
+        }
+        $snapshot = @(Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json)
+        foreach ($entry in $snapshot) {
+          $log = Get-WinEvent -ListLog $entry.LogName -ErrorAction SilentlyContinue
+          if ($null -eq $log) { Write-Warning "AppLocker event channel missing during restore: $($entry.LogName)"; continue }
+          $wanted = [bool]$entry.WasEnabled
+          if ([bool]$log.IsEnabled -ne $wanted) {
+            $switch = if ($wanted) { '/e:true' } else { '/e:false' }
+            & wevtutil.exe sl "$($entry.LogName)" $switch
+            if ($LASTEXITCODE -ne 0) { Write-Warning "Could not restore AppLocker event channel: $($entry.LogName)" }
+          }
+        }
+        Write-Output 'Restored original AppLocker Event Log channel states where available.'
+      register: applocker_channel_restore
+      changed_when: (applocker_channel_restore.stdout | default('')) is search('Restored original AppLocker Event Log')
       failed_when: false
 
     - name: Remove the AppLocker policy copy directory

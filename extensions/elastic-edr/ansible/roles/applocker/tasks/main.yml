@@ -8,10 +8,11 @@
     path: "{{ applocker_install_location }}"
     state: directory
 
-- name: Copy the AppLocker audit policy
-  ansible.windows.win_copy:
-    src: "{{ applocker_policy_file }}"
+- name: Render the AppLocker audit policy for the selected collection profile
+  ansible.windows.win_template:
+    src: "{{ role_path }}/files/{{ applocker_policy_file }}"
     dest: "{{ applocker_install_location }}\\{{ applocker_policy_file }}"
+  register: applocker_policy_copy
 
 # Validate the policy's collection types, rule identifiers and audit-only
 # posture before asking Windows to import it.
@@ -21,10 +22,16 @@
     try {
       [xml]$policy = Get-Content -LiteralPath "{{ applocker_install_location }}\{{ applocker_policy_file }}" -Raw
       if ($policy.AppLockerPolicy.Version -ne '1') { throw 'Expected AppLockerPolicy Version=1.' }
-      foreach ($type in @('Exe', 'Msi', 'Script', 'Appx')) {
+      $expectDll = "{{ applocker_enable_dll_collection | default(false) | string | lower }}" -eq 'true'
+      $requiredTypes = @('Exe', 'Msi', 'Script', 'Appx')
+      if ($expectDll) { $requiredTypes += 'Dll' }
+      foreach ($type in $requiredTypes) {
         $collections = @($policy.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq $type })
         if ($collections.Count -ne 1) { throw "Expected exactly one $type RuleCollection." }
         if ($collections[0].EnforcementMode -ne 'AuditOnly') { throw "$type collection is not AuditOnly." }
+      }
+      if (-not $expectDll -and @($policy.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq 'Dll' }).Count -gt 0) {
+        throw 'DLL collection was rendered although applocker_enable_dll_collection is false.'
       }
       if ($policy.SelectNodes('//RuleCollection[@Type="Msi"]/FilePathRule/Conditions/FilePublisherCondition').Count -gt 0) {
         throw 'FilePublisherCondition must be nested under FilePublisherRule.'
@@ -34,11 +41,16 @@
       }
       $rules = @($policy.SelectNodes('/AppLockerPolicy/RuleCollection/*'))
       if ($rules.Count -eq 0) { throw 'The policy contains no rules.' }
+      $ids = @()
       foreach ($rule in $rules) {
-        if ([string]::IsNullOrWhiteSpace($rule.GetAttribute('Id'))) { throw "Rule '$($rule.Name)' has no Id." }
-        [void][guid]::Parse($rule.GetAttribute('Id').Trim('{}'))
+        $id = $rule.GetAttribute('Id')
+        if ([string]::IsNullOrWhiteSpace($id)) { throw "Rule '$($rule.Name)' has no Id." }
+        $normalized = $id.Trim('{}')
+        [void][guid]::Parse($normalized)
+        $ids += $normalized.ToLowerInvariant()
       }
-      Write-Output 'AppLocker XML structure valid; Exe/Msi/Script/Appx remain AuditOnly.'
+      if (@($ids | Select-Object -Unique).Count -ne $ids.Count) { throw 'The policy contains duplicate rule IDs.' }
+      Write-Output ("AppLocker XML structure valid; required collections AuditOnly; DLL collection expected=" + $expectDll + ".")
     } catch {
       Write-Error "AppLocker policy validation failed: $($_.Exception.Message)"
       exit 1
@@ -56,35 +68,88 @@
     state: started
   register: appidsvc_result
   failed_when: appidsvc_result.state is defined and appidsvc_result.state != 'started'
-
-# Apply the policy only when the effective policy XML differs from the file
-# we ship - a real change report, not unconditional changed=true. Captures
-# hand-edits to the effective policy between runs too. The SHA-256 of the
-# XML string is compared before/after the apply.
-- name: Hash the effective AppLocker policy (before)
+# Preserve channel enablement once so uninstall can restore the pre-extension
+# state instead of leaving Event Viewer configuration changed.
+- name: Preserve original AppLocker event-channel states for uninstall
   ansible.windows.win_shell: |
-    $p = Get-AppLockerPolicy -Effective -Xml
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($p))).Replace('-','')
-  register: applocker_hash_before
+    $ErrorActionPreference = 'Stop'
+    $statePath = 'C:\ProgramData\GOAD-Elastic-EDR\applocker-event-channel-backup.json'
+    if (Test-Path -LiteralPath $statePath) {
+      Write-Output 'Existing AppLocker event-channel snapshot preserved.'
+      exit 0
+    }
+    $channels = @(
+      'Microsoft-Windows-AppLocker/EXE and DLL',
+      'Microsoft-Windows-AppLocker/MSI and Script',
+      'Microsoft-Windows-AppLocker/Packaged app-Execution',
+      'Microsoft-Windows-AppLocker/Packaged app-Deployment'
+    )
+    $snapshot = foreach ($channel in $channels) {
+      $log = Get-WinEvent -ListLog $channel -ErrorAction SilentlyContinue
+      if ($null -eq $log) { throw "Expected AppLocker event channel is unavailable: $channel" }
+      [pscustomobject]@{ LogName = $channel; WasEnabled = [bool]$log.IsEnabled }
+    }
+    New-Item -ItemType Directory -Path (Split-Path -Parent $statePath) -Force | Out-Null
+    ConvertTo-Json -InputObject @($snapshot) -Depth 5 |
+      Set-Content -LiteralPath $statePath -Encoding UTF8
+    Write-Output 'Saved original AppLocker event-channel states.'
+  register: applocker_event_channel_backup
   changed_when: false
-  failed_when: applocker_hash_before.rc is defined and (applocker_hash_before.rc != 0 or (applocker_hash_before.stdout | default('') | trim) == '')
+  failed_when: applocker_event_channel_backup.rc is defined and applocker_event_channel_backup.rc != 0
 
-- name: Apply the AppLocker audit-only policy (local policy)
-  ansible.windows.win_shell: >-
-    Set-AppLockerPolicy -XmlPolicy "{{ applocker_install_location }}\{{ applocker_policy_file }}"
+# The Fleet Windows policy already enables all four matching data streams;
+# enable them locally too, or an enabled stream has nothing to read.
+- name: Enable and verify all four AppLocker Windows Event Log channels
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $channels = @(
+      'Microsoft-Windows-AppLocker/EXE and DLL',
+      'Microsoft-Windows-AppLocker/MSI and Script',
+      'Microsoft-Windows-AppLocker/Packaged app-Execution',
+      'Microsoft-Windows-AppLocker/Packaged app-Deployment'
+    )
+    $changed = 0
+    foreach ($channel in $channels) {
+      $log = Get-WinEvent -ListLog $channel -ErrorAction SilentlyContinue
+      if ($null -eq $log) { throw "Expected AppLocker event channel is unavailable: $channel" }
+      if (-not $log.IsEnabled) {
+        & wevtutil.exe sl "$channel" /e:true
+        if ($LASTEXITCODE -ne 0) { throw "wevtutil could not enable AppLocker channel '$channel' (exit $LASTEXITCODE)." }
+        $changed++
+      }
+      $verify = Get-WinEvent -ListLog $channel -ErrorAction SilentlyContinue
+      if ($null -eq $verify -or -not $verify.IsEnabled) { throw "AppLocker channel did not become enabled: $channel" }
+    }
+    Write-Output ("applocker_channels_enabled={0}/{1}" -f $channels.Count, $channels.Count)
+    Write-Output ("applocker_channels_changed={0}" -f $changed)
+  register: applocker_event_channels
+  changed_when: (applocker_event_channels.stdout | default('')) is search('applocker_channels_changed=[1-9]')
+  failed_when: applocker_event_channels.rc is defined and applocker_event_channels.rc != 0
+
+
+# Hash, apply, and hash again in one task so changed_when compares values
+# produced by this invocation rather than referencing a future task result.
+- name: Apply the AppLocker audit-only policy and detect effective changes
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    try {
+      function Get-EffectiveAppLockerHash {
+        $p = Get-AppLockerPolicy -Effective -Xml
+        if ([string]::IsNullOrWhiteSpace([string]$p)) { throw 'Effective AppLocker policy XML is empty.' }
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$p))).Replace('-','')
+      }
+      $before = Get-EffectiveAppLockerHash
+      Set-AppLockerPolicy -XmlPolicy "{{ applocker_install_location }}\{{ applocker_policy_file }}"
+      $after = Get-EffectiveAppLockerHash
+      Write-Output ("applocker_policy_changed=" + [int]($before -ne $after))
+    } catch {
+      Write-Error "AppLocker policy application failed: $($_.Exception.Message)"
+      exit 1
+    }
   register: applocker_apply
-  changed_when: applocker_hash_before.stdout | default('') != applocker_hash_after.stdout | default('')
+  changed_when: (applocker_apply.stdout | default('')) is search('applocker_policy_changed=1')
   failed_when: applocker_apply.rc is defined and applocker_apply.rc != 0
-
-- name: Hash the effective AppLocker policy (after)
-  ansible.windows.win_shell: |
-    $p = Get-AppLockerPolicy -Effective -Xml
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($p))).Replace('-','')
-  register: applocker_hash_after
-  changed_when: false
-  failed_when: applocker_hash_after.rc is defined and (applocker_hash_after.rc != 0 or (applocker_hash_after.stdout | default('') | trim) == '')
 
 - name: Verify the effective AppLocker collections are active in audit mode
   ansible.windows.win_shell: |
@@ -92,7 +157,10 @@
     try {
       [xml]$policy = Get-AppLockerPolicy -Effective -Xml
       $bad = @()
-      foreach ($type in @('Exe', 'Msi', 'Script', 'Appx')) {
+      $expectDll = "{{ applocker_enable_dll_collection | default(false) | string | lower }}" -eq 'true'
+      $requiredTypes = @('Exe', 'Msi', 'Script', 'Appx')
+      if ($expectDll) { $requiredTypes += 'Dll' }
+      foreach ($type in $requiredTypes) {
         $collections = @($policy.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq $type })
         if ($collections.Count -ne 1 -or $collections[0].EnforcementMode -ne 'AuditOnly') { $bad += $type }
       }
@@ -100,7 +168,8 @@
       if ($policy.SelectNodes('//RuleCollection[@Type="Appx"]/FilePublisherRule').Count -lt 1) {
         throw 'The effective Appx collection has no FilePublisherRule.'
       }
-      Write-Output 'Effective AppLocker Exe/Msi/Script/Appx collections are AuditOnly.'
+      $dllState = if (@($policy.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq 'Dll' }).Count -gt 0) { 'enabled' } else { 'disabled' }
+      Write-Output ("Effective AppLocker required collections are AuditOnly; DLL collection=" + $dllState + ".")
     } catch {
       Write-Error "Effective AppLocker policy verification failed: $($_.Exception.Message)"
       exit 1

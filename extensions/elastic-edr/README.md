@@ -38,12 +38,13 @@
 - On every domain Windows machine:
     - **Sysmon 14.14** (tuned SwiftOnSecurity sysmon-config v74; 10/23/17-18/7/9
       enabled by the extension, see the Sysmon section) as the EDR event source
-    - an **AppLocker AUDIT-ONLY policy** (`applocker` role): nothing is ever
-      blocked, but Windows records Warning-class "would have been prevented"
-      events (8003/8006/8021/8024) for anything executing outside the standard
-      OS/application locations - the drop zones where lateral-movement tooling
-      lands. Local per-host policy via `Set-AppLockerPolicy`, no GPO needed.
-      AppIDSvc is explicitly configured for automatic startup and started; the task verifies the service state before applying the policy.
+    - an **AppLocker AUDIT-ONLY policy** (`applocker` role): execution is not
+      blocked. The baseline path rules audit nonstandard EXE/script launches
+      for all users, including administrators, and MSI installers staged outside
+      the Windows Installer cache. The four AppLocker Event Log channels are
+      enabled and sent to Elastic's four `windows.applocker_*` data streams.
+      Optional DLL-load auditing is available but disabled by default because
+      it checks every DLL and can increase event volume.
     - **host-side logging enablement** (`endpoint_logging` role) - 27 audit
       subcategories enabled (success+failure), the union of the Sigma
       logsource prerequisites and the Palantir WEF baseline:
@@ -115,6 +116,42 @@ package versions in `kibana.yml` together - see the comments in
 
 Sysmon is pinned to 14.x because 15.x dropped Windows Server 2016 support and
 DC03 runs the `win2016-server-x64-template`.
+
+### AppLocker audit coverage and event collection
+
+The extension applies a local AppLocker policy with every configured collection
+in `AuditOnly`; this is telemetry, not an application-control allow-list. No
+execution is blocked by this policy. EXE/script rules allow the Windows and
+Program Files paths for Everyone, but there is deliberately no catch-all
+Administrators allow rule: tools launched by local/domain administrators from
+user-writable or other nonstandard locations can generate audit warnings too.
+MSI rules allow the Windows Installer cache path only, so signed installers
+staged in Downloads/temp are visible as candidates. Signed packaged apps retain
+the publisher allow rule.
+
+The optional DLL collection is off by default. Enable it with
+`applocker_enable_dll_collection: true` in inventory/instance variables and
+re-provision to audit DLLs/OCXs outside the Windows and Program Files paths,
+including DLLs loaded by administrator-run processes. AppLocker evaluates each
+DLL loaded by applications; Microsoft's guidance warns that this can increase
+evaluation overhead, and the EXE/DLL event log can be very verbose. Keep this
+setting opt-in unless the lab has enough CPU and ingestion/disk headroom. Any
+enabled DLL collection is checked to ensure it remains `AuditOnly`.
+
+The role preserves the original enablement state of these four event channels,
+enables them for collection, and restores their previous state on uninstall:
+
+| AppLocker event channel | Elastic Windows data stream | Example audit warning |
+|---|---|---|
+| EXE and DLL | `windows.applocker_exe_and_dll` | 8003 — EXE/DLL candidate |
+| MSI and Script | `windows.applocker_msi_and_script` | 8006 — MSI/script candidate |
+| Packaged app-Execution | `windows.applocker_packaged_app_execution` | 8021 — package execution candidate |
+| Packaged app-Deployment | `windows.applocker_packaged_app_deployment` | 8024 — package deployment candidate |
+
+The per-host endpoint roll-up reports channel readiness and verifies that the
+effective base collections are audit-only. An enabled channel proves local log
+readiness, not that a generated event has reached Elasticsearch; verify ingestion
+during a live lab run before closing telemetry acceptance work.
 
 ### Sysmon config tuning (detection engineering)
 
@@ -356,8 +393,9 @@ ansible-playbook -i <inventory> extensions/elastic-edr/ansible/uninstall.yml
 ```
 
 Removes: the Elastic Agent (MSI uninstall), Sysmon (service + `c:\sysmon`),
-the AppLocker policy (restored to a default allow-everyone policy, AppIDSvc
-back to Manual), all 27+9 audit subcategories (disabled again), the 5
+the AppLocker policy (reset to a benign default, AppIDSvc back to Manual, and
+original AppLocker event-channel enablement restored), all 27+9 audit
+subcategories (disabled again), the 5
 PowerShell/4688 registry values, the `C:\elastic-agent` / `c:\applocker`
 directories, and `/etc/elastic-edr` on the ELASTIC-EDR machine.
 

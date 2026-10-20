@@ -5,14 +5,16 @@
   This policy gathers AppLocker audit telemetry without enforcing blocks.
   Every configured RuleCollection uses EnforcementMode="AuditOnly".
 
-  Coverage is deliberately explicit:
-    - EXE and Script: Everyone may run files under Windows and Program Files;
-      BUILTIN\Administrators may run all files.
-    - MSI: Everyone may run signed installers and installers under the Windows
-      Installer directory; BUILTIN\Administrators may run all installer files.
-    - Appx: Everyone may run signed packaged apps.
-  Other candidates are audited, not blocked. This is a learning-lab signal
-  policy, not an application-control allow-list.
+  Coverage is deliberately audit-oriented:
+    - EXE and Script: baseline allow paths are Windows and Program Files.
+      Tools run by administrators from other locations are also audited.
+    - MSI: only the Windows Installer cache path is allowed; signed installers
+      launched from other locations are audited as well.
+    - Appx: signed packaged apps are allowed; unmatched packages are audited.
+    - DLL: optional via applocker_enable_dll_collection; this checks every DLL
+      and can increase event volume and evaluation overhead.
+  Every configured collection stays AuditOnly, so execution is not blocked.
+  This is a learning-lab signal policy, not an application-control allow-list.
 
   Removal is handled by the extension uninstall playbook.
 -->
@@ -24,23 +26,20 @@
     <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E102}" Name="Everyone - Program Files" Description="Audit-only baseline path allow" UserOrGroupSid="S-1-1-0" Action="Allow">
       <Conditions><FilePathCondition Path="%PROGRAMFILES%\*"/></Conditions>
     </FilePathRule>
-    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E103}" Name="Administrators - all executable paths" Description="Default administrator path allow" UserOrGroupSid="S-1-5-32-544" Action="Allow">
-      <Conditions><FilePathCondition Path="*"/></Conditions>
+  </RuleCollection>
+{% if applocker_enable_dll_collection | default(false) | bool %}
+  <RuleCollection Type="Dll" EnforcementMode="AuditOnly">
+    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46F501}" Name="Everyone - Windows DLLs" Description="Audit-only baseline DLL path allow" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%WINDIR%\*"/></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46F502}" Name="Everyone - Program Files DLLs" Description="Audit-only baseline DLL path allow" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%PROGRAMFILES%\*"/></Conditions>
     </FilePathRule>
   </RuleCollection>
+{% endif %}
   <RuleCollection Type="Msi" EnforcementMode="AuditOnly">
-    <FilePublisherRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E201}" Name="Everyone - signed installers" Description="Audit-only publisher allow for signed installers" UserOrGroupSid="S-1-1-0" Action="Allow">
-      <Conditions>
-        <FilePublisherCondition PublisherName="*" ProductName="*" BinaryName="*">
-          <BinaryVersionRange LowSection="0.0.0.0" HighSection="*"/>
-        </FilePublisherCondition>
-      </Conditions>
-    </FilePublisherRule>
-    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E202}" Name="Everyone - Windows Installer directory" Description="Default Windows Installer path allow" UserOrGroupSid="S-1-1-0" Action="Allow">
+    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E202}" Name="Everyone - Windows Installer directory" Description="Audit-only baseline path allow; staged installers elsewhere are audited" UserOrGroupSid="S-1-1-0" Action="Allow">
       <Conditions><FilePathCondition Path="%WINDIR%\Installer\*"/></Conditions>
-    </FilePathRule>
-    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E203}" Name="Administrators - all installer paths" Description="Default administrator installer allow" UserOrGroupSid="S-1-5-32-544" Action="Allow">
-      <Conditions><FilePathCondition Path="*"/></Conditions>
     </FilePathRule>
   </RuleCollection>
   <RuleCollection Type="Script" EnforcementMode="AuditOnly">
@@ -49,9 +48,6 @@
     </FilePathRule>
     <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E302}" Name="Everyone - Program Files scripts" Description="Audit-only baseline path allow" UserOrGroupSid="S-1-1-0" Action="Allow">
       <Conditions><FilePathCondition Path="%PROGRAMFILES%\*"/></Conditions>
-    </FilePathRule>
-    <FilePathRule Id="{A8DFB7A7-2C0B-4EC3-A2E1-1D9A4F46E303}" Name="Administrators - all script paths" Description="Default administrator script allow" UserOrGroupSid="S-1-5-32-544" Action="Allow">
-      <Conditions><FilePathCondition Path="*"/></Conditions>
     </FilePathRule>
   </RuleCollection>
   <RuleCollection Type="Appx" EnforcementMode="AuditOnly">
