@@ -21,7 +21,8 @@
       {{ '%-14s' | format(host) }} agent={{ '%-8s' | format(r.agent_service | default('?')) }} healthy={{ '%-4s' | format(r.agent_healthy | default('?')) }} audit_4688={{ '%-6s' | format(r.audit_4688 | default('?')) }} scriptblock_4104={{ r.scriptblock_4104 | default('?') }} applocker_channels={{ r.applocker_channels | default('?') }} AppLocker_audit={{ r.applocker_policy | default('?') }} DLLs={{ r.applocker_dll_collection | default('?') }}
       {% endfor %}
       ======================================================
-      legend: healthy=yes/NO - agent self-report; audit_4688 /
+      legend: healthy=yes/NO - agent daemon self-report (state=2 HEALTHY via
+      `elastic-agent status --output json`); audit_4688 /
       scriptblock_4104 = yes/CHECK - host-side logging state;
       applocker_channels = 4/4 or CHECK - local AppLocker Event Log channels;
       AppLocker_audit = yes/CHECK - effective policy is audit-only;

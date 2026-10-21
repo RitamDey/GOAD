@@ -63,9 +63,26 @@
     start_mode: auto
   register: ea_service_started
 
+# Resolve the installed elastic-agent.exe once (issue #10): the Windows MSI
+# installs program files at C:\Program Files\Elastic\Agent* with the exe at
+# the Agent dir ROOT - no version-nested \<version>\agent\ directory (that is
+# the tar/zip layout). Sources (fetched this session):
+#   https://www.elastic.co/docs/reference/fleet/installation-layout
+#   https://www.elastic.co/docs/reference/fleet/install-agent-msi
+- name: Resolve the installed elastic-agent.exe path
+  win_shell: |
+    $p = "C:\Program Files\Elastic\Agent\elastic-agent.exe"
+    if (-not (Test-Path $p)) {
+      $p = (Get-Item "C:\Program Files\Elastic\Agent\*\agent\elastic-agent.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+    }
+    if ($p) { Write-Output $p } else { Write-Output "" }
+  register: ea_agent_exe
+  changed_when: false
+  failed_when: false
+
 - name: Show agent status
   win_shell: |
-    & "C:\Program Files\Elastic\Agent\{{ elastic_agent_version }}\agent\elastic-agent.exe" status
+    & "{{ ea_agent_exe.stdout | default('C:\Program Files\Elastic\Agent\elastic-agent.exe') }}" status
   register: ea_status
   changed_when: false
   failed_when: ea_status.rc != 0

@@ -19,18 +19,51 @@
 # The retry loop tests its OWN registered result (agent_health_retry), so the
 # until-condition can actually flip once the agent finishes booting - a
 # vars-pinned attempt-#1 result can never flip and only burns the budget.
+#
+# Elastic Agent exe path (#10): the Windows MSI installs program files at
+# C:\Program Files\Elastic\Agent* with elastic-agent.yml / fleet.enc at the
+# Agent directory ROOT - there is NO version-nested \<version>\agent\ directory
+# in the MSI layout (that layout belongs to tar/zip distributions).
+# Sources (fetched this session):
+#   https://www.elastic.co/docs/reference/fleet/installation-layout
+#   https://www.elastic.co/docs/reference/fleet/install-agent-msi
+# Resolve the exe once, with a version-nested fallback for safety, then use
+# the resolved path everywhere. Belt-and-braces: the wildcard fallback also
+# matches a version-nested install if one ever exists.
+- name: Resolve the installed elastic-agent.exe path
+  ansible.windows.win_shell: |
+    $p = "C:\Program Files\Elastic\Agent\elastic-agent.exe"
+    if (-not (Test-Path $p)) {
+      $p = (Get-Item "C:\Program Files\Elastic\Agent\*\agent\elastic-agent.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+    }
+    if ($p) { Write-Output $p } else { Write-Output "" }
+  register: agent_exe
+  changed_when: false
+  failed_when: false
+  when: agent_service.exists | default(false)
+
 - name: Wait for the agent to report healthy (local retries)
   ansible.windows.win_shell: |
-    & "C:\Program Files\Elastic\Agent\{{ elastic_agent_version }}\agent\elastic-agent.exe" status --output json
+    $out = & "{{ agent_exe.stdout | default('C:\Program Files\Elastic\Agent\elastic-agent.exe') }}" status --output json | ConvertFrom-Json
+    # elastic-agent status --output json (8.19.x) returns an AgentState object
+    # whose top-level field is "state": <int> - the cproto.State enum,
+    # serialized numerically. HEALTHY = 2 (Source, elastic-agent v8.19.23:
+    # pkg/control/v2/cproto/control_v2.pb.go State_HEALTHY State = 2;
+    # pkg/control/v2/client/client.go AgentState.State `json:"state"`;
+    # internal/pkg/agent/cmd/status.go jsonOutput marshals the AgentState
+    # directly - there is NO top-level "health":"healthy" string field).
+    # STARTING=0 CONFIGURING=1 HEALTHY=2 DEGRADED=3 FAILED=4 STOPPING=5.
+    Write-Output ("agent_state=" + $out.state)
   register: agent_health_retry
   changed_when: false
   failed_when: false
   until: >-
-    (agent_health_retry.stdout | default(''))
-    is search('"health"\s*:\s*"healthy"')
+    (agent_health_retry.stdout | default('')) is search('agent_state=2')
   retries: 6
   delay: 10
-  when: agent_service.exists | default(false)
+  when:
+    - agent_service.exists | default(false)
+    - (agent_exe.stdout | default('')) | length > 0
 
 - name: Verify host-side logging took effect (4688 audit + 4104 script block)
   ansible.windows.win_shell: |
@@ -81,7 +114,7 @@
   ansible.builtin.set_fact:
     endpoint_health_report:
       agent_service: "{{ agent_service.exists | default(false) | bool | ternary('installed', 'MISSING') }}"
-      agent_healthy: "{{ (agent_health_retry.stdout | default('')) is search('\"health\"\\s*:\\s*\"healthy\"') | bool | ternary('yes', 'NO') }}"
+      agent_healthy: "{{ (agent_health_retry.stdout | default('')) is search('agent_state=2') | bool | ternary('yes', 'NO') }}"
       audit_4688: "{{ (logging_verify.stdout | default('')) is search('audit_process_creation=True') | bool | ternary('yes', 'CHECK') }}"
       scriptblock_4104: "{{ (logging_verify.stdout | default('')) is search('scriptblock_logging=1') | bool | ternary('yes', 'CHECK') }}"
       applocker_channels: "{{ (applocker_readiness.stdout | default('')) is search('applocker_event_channels=4/4') | bool | ternary('4/4', 'CHECK') }}"
