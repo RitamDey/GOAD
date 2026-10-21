@@ -255,6 +255,14 @@
 
 	<!--SYSMON EVENT ID 3 : NETWORK CONNECTION INITIATED [NetworkConnect]-->
 		<!--COMMENT:	Default GOAD posture uses a high-signal process/path-and-port intersection; sysmon_network_telemetry can select broader collection.-->
+		<!--COMMENT:	EXACT FILTER SEMANTICS of the high_signal include block: different
+				fields are ANDed; multiple values of the same field are ORed; exclude
+				rules take precedence over includes. Effective result: a connection is
+				logged ONLY when it matches (one of the listed Image path/name rules)
+				AND (one of the listed DestinationPort rules). BLIND SPOTS by design:
+				a listed tool connecting to an UNLISTED port is NOT logged; an unlisted
+				process connecting to a listed port is NOT logged. Broaden with
+				sysmon_network_telemetry: broad (logs ALL Event ID 3; higher volume).-->
 		<!--COMMENT:	[ https://attack.mitre.org/wiki/Command_and_Control ] [ https://attack.mitre.org/wiki/Exfiltration ] [ https://attack.mitre.org/wiki/Lateral_Movement ] -->
 		<!--TECHNICAL:	For the DestinationHostname, Sysmon uses the GetNameInfo API, which will often not have any information, and may just be a CDN. This is NOT reliable for filtering.-->
 		<!--TECHNICAL:	For the DestinationPortName, Sysmon uses the GetNameInfo API for the friendly name of ports you see in logs.-->
@@ -338,8 +346,12 @@
 			<DestinationPort name="Proxy" condition="is">1080</DestinationPort> <!--Socks proxy port | Credit @ion-storm-->
 			<DestinationPort name="Proxy" condition="is">3128</DestinationPort> <!--Socks proxy port | Credit @ion-storm-->
 			<DestinationPort name="Proxy" condition="is">8080</DestinationPort> <!--Socks proxy port | Credit @ion-storm-->
-			<!--Ports: Tor-->
-			<DestinationPort name="PPTP" condition="is">1723</DestinationPort> <!--PPTP control-port heuristic; not proof of application protocol-->
+			<!--Ports: remote-access / tunneling control ports. Port labels are heuristics:
+			    a destination port suggests, it does not prove, the application protocol.
+			    IANA (fetched 2026-10-21, service-names-port-numbers.csv): 1723/tcp = pptp
+			    (RFC 2637). 9001/9030 are Tor-ASSOCIATED port conventions, not IANA
+			    Tor registrations.-->
+			<DestinationPort name="PPTP" condition="is">1723</DestinationPort> <!--PPTP control port (IANA pptp); watch for VPN/tunnel control traffic-->
 			<DestinationPort name="TorPort9001" condition="is">9001</DestinationPort> <!--Tor-associated port heuristic; not proof of Tor protocol-->
 			<DestinationPort name="TorPort9030" condition="is">9030</DestinationPort> <!--Tor-associated port heuristic; not proof of Tor protocol-->
 		</NetworkConnect>
@@ -405,7 +417,9 @@
 	</RuleGroup>
 
 	<!--SYSMON EVENT ID 7 : DLL (IMAGE) LOADED BY PROCESS [ImageLoad]-->
-		<!--COMMENT:	Can cause high system load, disabled by default.-->
+		<!--COMMENT:	Can cause high system load. Stock v74 ships this section disabled;
+				this extension deliberately ENABLES a scoped include block (below) for
+				writable-path DLL-load telemetry - expect some added volume.-->
 		<!--COMMENT:	[ https://attack.mitre.org/wiki/Technique/T1073 ] [ https://attack.mitre.org/wiki/Technique/T1038 ] [ https://attack.mitre.org/wiki/Technique/T1034 ] -->
 
 		<!--DATA: UtcTime, ProcessGuid, ProcessId, Image, ImageLoaded, Hashes, Signed, Signature, SignatureStatus-->
@@ -936,6 +950,20 @@
 
 	<RuleGroup name="" groupRelation="or">
 		<DnsQuery onmatch="exclude">
+			<!--COMMENT:	DNS VISIBILITY POSTURE (this extension). Always excluded below:
+					reverse-DNS (.arpa), localhost, connectivity-check noise. With
+					sysmon_dns_telemetry: filtered (default) the block ALSO inherits the
+					SwiftOnSecurity v74 domain-exclusion corpus: broad Microsoft /
+					AzureAD-Office / Windows Update / browser (bing, msedge, live) / CDN
+					and advertising suffixes (microsoft.com, microsoftonline.com,
+					windowsupdate.com, msedge.net, office.net, bing.com, live.com, ...).
+					TRADE-OFF: routine services an attacker can also hide behind - a C2
+					lookalike under an excluded suffix is NOT logged while filtered.
+					TO BROADEN: set sysmon_dns_telemetry: broad (drops the domain corpus,
+					keeps local/reverse/noise exclusions) - or replace this whole RuleGroup
+					with <DnsQuery onmatch="exclude"><QueryName condition="end with">.arpa</QueryName></DnsQuery>
+					for full DNS visibility at much higher volume. Filtering happens on
+					the endpoint: excluded events cannot be recovered later.-->
 			<!--Network noise-->
 			<QueryName condition="end with">.arpa.</QueryName> <!--Design decision to not log reverse DNS lookups. You will need to decide.-->
 			<QueryName condition="end with">.arpa</QueryName> <!--Design decision to not log reverse DNS lookups. You will need to decide.-->

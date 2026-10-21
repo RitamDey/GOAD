@@ -192,7 +192,9 @@ matching events. This can miss a listed process using ordinary HTTPS/443 or a
 normal process connecting to a listed port. For infrastructure hunts, set
 `sysmon_network_telemetry: broad` in inventory/instance variables and
 re-provision. Broad mode removes the process/port filter and logs all Event ID 3
-connections; expect higher volume.
+connections; expect higher volume. The exact AND/OR semantics and the resulting
+blind spots are documented in a comment block at the top of the Event ID 3
+RuleGroup in `sysmonconfig-export.xml`.
 
 **Event ID 22 — DNS:** `sysmon_dns_telemetry: filtered` keeps the inherited
 Microsoft/platform, third-party, CDN and advertising-domain exclusions.
@@ -201,6 +203,9 @@ retaining preceding local/reverse-DNS/noise exclusions. This helps surface
 tenant-specific or attacker-controlled names under otherwise excluded service
 suffixes. Filtering occurs on the endpoint: excluded events cannot be recovered
 later. Measure volume and disk growth before leaving broad profiles enabled.
+The DNS visibility posture — what is excluded and why, the trade-off, and how
+to go broader — is documented in a comment block at the top of the Event ID 22
+RuleGroup in `sysmonconfig-export.xml`.
 
 **Event ID 7 — image loads:** path-based telemetry, not an unsigned-DLL test.
 It captures DLL loads from user-writable paths regardless of loader path, plus
