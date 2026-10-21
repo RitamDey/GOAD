@@ -1,0 +1,44 @@
+# emulation extension : atomic_redteam role defaults
+#
+# Pin BOTH components to an exact version/SHA (fully reproducible lab).
+#
+#   art_module_version - the invoke-atomicredteam PowerShell module version
+#                        from PSGallery (verified live: 2.3.0 is the latest
+#                        published version; the GitHub repo tags releases in
+#                        lockstep, v2.3.0 confirmed). Installed with
+#                        Install-Module -RequiredVersion (never -Force, never
+#                        "latest").
+#
+#   art_repo_sha       - the redcanaryco/atomic-red-team commit SHA the
+#                        atomics are cloned at. This repo has ZERO releases
+#                        and ZERO tags (verified live on the GitHub API:
+#                        both endpoints return empty arrays) - there is no
+#                        semver to lean on. Upgrades are SHA bumps: take the
+#                        new master SHA, note the date below, re-run the
+#                        install. Check the commit log for behavior changes
+#                        in the atoms you use before bumping.
+#                        388942adbd9641f4dfdcf079d7efe9a75ec0ac43 = master
+#                        head, 2026-09-05.
+art_module_version: "2.3.0"
+art_repo_sha: "388942adbd9641f4dfdcf079d7efe9a75ec0ac43"
+art_repo_url: "https://github.com/redcanaryco/atomic-red-team.git"
+
+# Install locations (Defender exclusions are scoped to EXACTLY these paths)
+art_install_root: "C:\\Tools\\AtomicRedTeam"
+art_atomics_dir: "C:\\Tools\\AtomicRedTeam\\atomics"
+
+# git is the transport for the atomics clone (pinned SHA checkout); the
+# PowerShell module comes from PSGallery (NuGet-backed).
+art_git_url: "https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/Git-2.47.1-64-bit.exe"
+# sha256 of Git-2.47.1-64-bit.exe (downloaded + hashed at build time)
+art_git_installer_sha256: "25527923debc06515b3016f2d6bca0820656e8281a23be2f43bfb658bd5dda70"
+art_git_installer_path: "C:\\Tools\\AtomicRedTeam\\git-installer.exe"
+
+# PSModulePath-based auto-import: write an Import-Module line into the
+# AllUsers profile so every interactive/shell session has
+# invoke-atomicredteam available (what Caldera's atomic plugin docs assume).
+art_profile_import: true
+
+# Health-check tuning (verify_agents stage)
+art_health_retries: 6      # x10s = 1 min for the module import to settle
+art_health_delay: 10

@@ -1,7 +1,58 @@
 # health_assertions : endpoint verification (play 2, per windows agent)
-# Populated in commit 2 with the atomic_redteam role. Kept as a task file
-# now so the dispatcher (main.yml) is valid from commit 1 on.
+# Runs on every emulation agent AFTER the atomic_redteam role. Asserts, per
+# host, that:
+#   1. the invoke-atomicredteam module is importable at the pinned version
+#   2. the atomics checkout exists, is populated, and is at the pinned SHA
+#   3. the Defender path exclusions are present
+# A single slow host does NOT fail the whole play: the checks use
+# failed_when: false and every host records an emulation_health_report fact
+# (review lesson B5: the retry loop tests its OWN registered result, so the
+# until-condition can actually flip).
+# The cross-host roll-up table is printed at the end of the run by the
+# 'aggregate' stage (install.yml play 3), which also fails loudly when no
+# host reported healthy.
 
-- name: Endpoint verification is delivered with the atomic_redteam role (commit 2)
-  ansible.builtin.debug:
-    msg: "verify_agents stage: nothing to assert yet (ART role ships in the next commit)."
+- name: Verify the invoke-atomicredteam module imports (local retries)
+  ansible.windows.win_shell: |
+    $m = Import-Module invoke-atomicredteam -RequiredVersion {{ art_module_version }} -PassThru -ErrorAction SilentlyContinue
+    if ($m) { Write-Output ("module-ok=" + $m.Version) } else { Write-Output "module-ok=no" }
+  register: art_module_verify
+  changed_when: false
+  failed_when: false
+  until: art_module_verify.stdout is search('module-ok=')
+  retries: "{{ art_health_retries | default(6) }}"
+  delay: "{{ art_health_delay | default(10) }}"
+
+- name: Verify the atomics checkout (populated + pinned SHA)
+  ansible.windows.win_shell: |
+    $dir = '{{ art_atomics_dir }}'
+    $sha = ''
+    $atomCount = 0
+    if (Test-Path $dir) {
+      $sha = (git -C $dir rev-parse HEAD) 2>$null
+      $atomCount = (Get-ChildItem -Path "$dir\atomics" -Directory -ErrorAction SilentlyContinue | Measure-Object).Count
+    }
+    Write-Output ("atomics_dir=" + (Test-Path $dir))
+    Write-Output ("atomics_sha=" + $sha)
+    Write-Output ("atomics_count=" + $atomCount)
+  register: art_atomics_verify
+  changed_when: false
+  failed_when: false
+
+- name: Verify the Defender path exclusions
+  ansible.windows.win_shell: |
+    $current = (Get-MpPreference).ExclusionPath
+    $ok = ($current -contains '{{ art_install_root }}') -and ($current -contains '{{ art_atomics_dir }}')
+    Write-Output ("exclusions_ok=" + $ok)
+  register: art_exclusions_verify
+  changed_when: false
+  failed_when: false
+
+- name: Record the emulation health result (per-host fact)
+  ansible.builtin.set_fact:
+    emulation_health_report:
+      art_module: "{{ art_module_verify.stdout is search('module-ok=' ~ art_module_version) | bool | ternary('ok', 'MISSING') }}"
+      atomics_dir: "{{ (art_atomics_verify.stdout | default('')) is search('atomics_dir=True') | bool | ternary('present', 'MISSING') }}"
+      atomics_sha: "{{ ((art_atomics_verify.stdout | default('')) is search('atomics_sha=' ~ art_repo_sha)) | bool | ternary('pinned', 'CHECK') }}"
+      atomics_count: "{{ ((art_atomics_verify.stdout | default('')) is search('atomics_count=[1-9]')) | bool | ternary('populated', 'EMPTY') }}"
+      defender_exclusions: "{{ (art_exclusions_verify.stdout | default('')) is search('exclusions_ok=True') | bool | ternary('set', 'CHECK') }}"

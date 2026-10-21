@@ -1,7 +1,59 @@
 # health_assertions : cross-host roll-up (play 3, runs once on the EMULATION VM)
-# Populated in commit 2 with the atomic_redteam role. Kept as a task file
-# now so the dispatcher (main.yml) is valid from commit 1 on.
+# Collects the emulation_health_report fact that play 2 recorded on every
+# windows agent and prints the one-screen per-endpoint table that the
+# install.yml / verify_agents headers promise. Fails loudly when NO host
+# reported at all (play 2 never ran or every host skipped) - silent absence
+# must not look like success.
 
-- name: Aggregate roll-up is delivered with the atomic_redteam role (commit 2)
+- name: Collect the emulation health reports from all agent hosts
+  ansible.builtin.set_fact:
+    emulation_rollup: >-
+      {{ hostvars | dict2items
+         | selectattr('value.emulation_health_report', 'defined')
+         | map(attribute='key') | list }}
+
+- name: Show the endpoint roll-up (per-host table)
   ansible.builtin.debug:
-    msg: "aggregate stage: nothing to roll up yet (ART role ships in the next commit)."
+    msg: |
+      ================== EMULATION ENDPOINT ROLL-UP ==================
+      {% for host in emulation_rollup | default([]) %}
+      {% set r = hostvars[host].emulation_health_report %}
+      {{ '%-14s' | format(host) }} module={{ '%-8s' | format(r.art_module | default('?')) }} atomics={{ '%-8s' | format(r.atomics_dir | default('?')) }}/{{ '%-7s' | format(r.atomics_count | default('?')) }}@{{ '%-7s' | format(r.atomics_sha | default('?')) }} defender_excl={{ r.defender_exclusions | default('?') }}
+      {% endfor %}
+      ================================================================
+      legend: module=ok/MISSING - invoke-atomicredteam importable at the
+      pinned version; atomics=present/MISSING + populated/EMPTY +
+      pinned/CHECK (commit SHA); defender_excl=set/CHECK - the ART path
+      exclusions. hosts reported: {{ emulation_rollup | default([]) | length }}
+
+- name: Count unhealthy endpoints (roll-up grade)
+  ansible.builtin.set_fact:
+    emulation_rollup_unhealthy: >-
+      {{ emulation_rollup | default([])
+         | map('extract', hostvars, ['emulation_health_report'])
+         | selectattr('art_module', 'equalto', 'MISSING') | list | length }}
+
+- name: Count hosts with a drifted atomics pin
+  ansible.builtin.set_fact:
+    emulation_rollup_pin_drift: >-
+      {{ emulation_rollup | default([])
+         | map('extract', hostvars, ['emulation_health_report'])
+         | selectattr('atomics_sha', 'equalto', 'CHECK') | list | length }}
+
+- name: Fail if no endpoint reported a health result
+  ansible.builtin.fail:
+    msg: >-
+      No endpoint reported an emulation_health_report - the verify_agents
+      stage (play 2) either never ran or every host failed before the record
+      step. Nothing to roll up; re-run the windows agents play.
+  when: (emulation_rollup | default([])) | length == 0
+
+- name: Warn about unhealthy endpoints (non-fatal, per design)
+  ansible.builtin.debug:
+    msg: >-
+      {{ emulation_rollup_unhealthy }} endpoint(s) missing the ART module and
+      {{ emulation_rollup_pin_drift }} endpoint(s) with a drifted atomics SHA
+      - see the table above; a lagging host usually just needs a re-run.
+  when:
+    - (emulation_rollup | default([])) | length > 0
+    - (emulation_rollup_unhealthy | default(0)) | int > 0 or (emulation_rollup_pin_drift | default(0)) | int > 0

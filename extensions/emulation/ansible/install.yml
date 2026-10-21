@@ -2,9 +2,12 @@
 # Play 1 : deploy the Caldera 5.3.0 server (emu + sandcat + atomic plugins)
 #          on the emulation VM and assert the UI + API answer.
 # Play 2 : install the Atomic Red Team PowerShell framework on every domain
-#          windows machine (Defender path exclusions for the ART dirs only).
+#          windows machine (pinned module + pinned atomics SHA, Defender
+#          path exclusions for the ART dirs only), then assert each endpoint
+#          came up healthy (per-host results; no single slow host fails the
+#          play).
 # Play 3 : roll up the per-host ART results into one table on the emulation
-#          VM (stage: aggregate).
+#          VM (stage: aggregate) and grade the fleet.
 
 - name: Install Caldera server (emulation)
   hosts: emulation_server
@@ -12,3 +15,15 @@
   roles:
     - { role: 'caldera_server', tags: 'caldera' }
     - { role: 'health_assertions', tags: 'health_assertions', stage: 'verify_stack' }
+
+- name: Install Atomic Red Team on windows machines
+  hosts: emulation_agents
+  roles:
+    - { role: 'atomic_redteam', tags: 'art' }
+    - { role: 'health_assertions', tags: 'health_assertions', stage: 'verify_agents' }
+
+- name: Roll up endpoint health (aggregate)
+  hosts: emulation_server
+  become: yes
+  roles:
+    - { role: 'health_assertions', tags: 'health_assertions', stage: 'aggregate' }
