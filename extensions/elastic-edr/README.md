@@ -313,6 +313,61 @@ UI at any time without touching the extension. Deleting the state file
 (`{{ state_dir }}/prepackaged-rules-state` on the ELASTIC-EDR machine)
 re-applies the configured posture on the next run.
 
+### Bulk rule posture verification (what the marker guarantees)
+
+The posture marker is written ONLY after the transition's effect is verified:
+after the bulk enable/disable call, the install re-queries
+`GET /api/detection_engine/rules/_find` filtered to
+`alert.attributes.params.immutable: true` plus the TARGETED enabled-state, and
+persists `true`/`false` only when at least one prepackaged rule is found in the
+targeted state. A bulk action that returns an error or an empty read-back fails
+the play WITHOUT writing the marker - the next provision re-runs the
+transition, which is the intended retry loop. To inspect the current applied
+posture: `cat /etc/elastic-edr/prepackaged-rules-state` on the ELASTIC-EDR
+machine (`true` = out-of-the-box SIEM applied, `false` = solo hunting), or
+check effective rule states in Kibana (Security -> Rules -> filter "Elastic
+rules" + Enabled).
+
+## Telemetry blind spots by design
+
+- **Event ID 3 (network connections):** the default `high_signal` profile logs
+  a connection only when a listed process image/path AND a listed destination
+  port both match (different fields ANDed, same-field values ORed, excludes
+  take precedence). A listed tool to an unlisted port, or an unlisted process
+  to a listed port, is NOT logged. Set `sysmon_network_telemetry: broad` for
+  full Event ID 3 collection. Exact semantics are also documented in a comment
+  block inside `sysmonconfig-export.xml` (Event ID 3 RuleGroup).
+- **Event ID 22 (DNS):** the default `filtered` profile excludes reverse-DNS,
+  localhost, connectivity-check noise AND the inherited broad
+  Microsoft/AzureAD/Office/Windows Update/browser/CDN/advertising domain
+  corpus - a C2 lookalike under an excluded suffix is not logged while
+  filtered. `sysmon_dns_telemetry: broad` drops the domain corpus (keeps
+  local/reverse/noise exclusions). Endpoint-side filtering: excluded events
+  cannot be recovered later. The posture, trade-off and broadening steps are
+  documented in a comment block inside `sysmonconfig-export.xml` (Event ID 22
+  RuleGroup).
+- **Windows metrics:** the default Fleet policy collects no Windows
+  perfmon/service or system resource metrics - rules keyed on those streams
+  stay enabled-but-dormant until the inputs are deliberately enabled (see the
+  note in Two hunting postures above).
+
+## Live-run validation checklist (standing gate)
+
+This branch has ZERO live runs. Every fix landed with static verification
+only (YAML/XML parse, source-quoted facts, curl HEAD checks). The first
+home-lab debug run must confirm each item below - these ARE the open
+live-run issues, converted into a runbook:
+
+| # | What to confirm | How |
+|---|---|---|
+| #37 | `elastic-agent status --output json` top-level `state` is the numeric enum; HEALTHY renders `agent_state=2` | `& "C:\Program Files\Elastic\Agent\elastic-agent.exe" status --output json` on a domain host - expect `"state": 2` at top level, no `"health"` key |
+| #10 | the MSI layout has NO version-nested exe; the resolve task finds the root exe | `Test-Path "C:\Program Files\Elastic\Agent\elastic-agent.exe"` -> True on an MSI host |
+| #28 | fleet-server bootstrap succeeds with `--url=https://localhost:8220 --insecure` (self-signed); note whether the OLD `--url=http://localhost:5601` form would also have worked | provision once; if the install step fails, read the diagnostic task's journalctl tail |
+| #16 | `kibana_system` Fleet privilege reality: do the 8 remaining kibana_system GETs (status/epm/package_policies/enrollment-list/fleet_server_hosts) answer 200? | watch the provision run; any 403 on those = kibana_system lacks Fleet feature privileges (the split in `elastic_stack/defaults/main.yml` tells you which are which) |
+| #23 | after a posture flip, `_find` returns `total >= 1` for the targeted state and the marker updates | flip `prepackaged_rules_enabled` + re-provision; `cat /etc/elastic-edr/prepackaged-rules-state` must match the flag only after a green run |
+| #31 | future backing indices inherit replicas=0 through `logs@custom`/`metrics@custom` | after 24h+ of ingest: `GET logs-*/_settings` - every backing index shows `number_of_replicas: "0"`; cluster stays green, not yellow |
+| #5/#12 | real ingest volume vs the 60-day ILM window | `GET _cat/indices?v&s=store.size:desc` daily for the first week; measure GB/day, tighten `elastic_ilm_retention_days` per the Data retention section |
+
 ## What GOAD core does to your specimen (read before writing detections)
 
 This is an observation lab: the hosts you attack are also hosts GOAD core has
