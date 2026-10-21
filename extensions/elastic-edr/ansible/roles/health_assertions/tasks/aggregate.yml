@@ -54,6 +54,22 @@
          | map('extract', hostvars, ['endpoint_health_report'])
          | selectattr('agent_service', 'equalto', 'MISSING') | list | length }}
 
+- name: Count hosts with unverified process-creation auditing (4688)
+  ansible.builtin.set_fact:
+    endpoint_rollup_4688_check: >-
+      {{ endpoint_rollup | default([])
+         | map('extract', hostvars, ['endpoint_health_report'])
+         | selectattr('audit_4688', 'defined')
+         | selectattr('audit_4688', 'equalto', 'CHECK') | list | length }}
+
+- name: Count hosts with unverified PowerShell script-block logging (4104)
+  ansible.builtin.set_fact:
+    endpoint_rollup_4104_check: >-
+      {{ endpoint_rollup | default([])
+         | map('extract', hostvars, ['endpoint_health_report'])
+         | selectattr('scriptblock_4104', 'defined')
+         | selectattr('scriptblock_4104', 'equalto', 'CHECK') | list | length }}
+
 - name: Fail if no endpoint reported a health result
   ansible.builtin.fail:
     msg: >-
@@ -66,10 +82,14 @@
   ansible.builtin.debug:
     msg: >-
       {{ endpoint_rollup_unhealthy }} endpoint(s) not yet healthy,
-      {{ endpoint_rollup_missing }} endpoint(s) missing the agent service, and
+      {{ endpoint_rollup_missing }} endpoint(s) missing the agent service,
+      {{ endpoint_rollup_4688_check }} endpoint(s) with unverified 4688
+      process-creation auditing (CHECK),
+      {{ endpoint_rollup_4104_check }} endpoint(s) with unverified 4104
+      script-block logging (CHECK), and
       {{ endpoint_rollup_applocker_unready | default(0) }} AppLocker readiness
       check(s) needing attention - see the table above; these checks do not
       block Windows execution or simulate attack activity.
   when:
     - (endpoint_rollup | default([])) | length > 0
-    - (endpoint_rollup_unhealthy | default(0)) | int > 0 or (endpoint_rollup_missing | default(0)) | int > 0 or (endpoint_rollup_applocker_unready | default(0)) | int > 0
+    - (endpoint_rollup_unhealthy | default(0)) | int > 0 or (endpoint_rollup_missing | default(0)) | int > 0 or (endpoint_rollup_applocker_unready | default(0)) | int > 0 or (endpoint_rollup_4688_check | default(0)) | int > 0 or (endpoint_rollup_4104_check | default(0)) | int > 0
