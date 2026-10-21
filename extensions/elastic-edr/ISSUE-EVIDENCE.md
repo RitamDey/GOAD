@@ -144,4 +144,27 @@ setup example passes --url=https://fleet-server:8220; self-signed + --insecure
 rule quoted in the task comment).
 
 Post-fix status: prep-only-live-run-pending.
+---
 
+## Issue #16 -- partially addressed (C-12 commit) - identity split, live confirmation pending
+
+Docs outcome B (docs silent/ambiguous on kibana_system holding ALL Fleet feature
+privileges): the ~10 bootstrap/WRITE Fleet call sites now authenticate as the
+`elastic` superuser; the 8 remaining READ-ONLY call sites (status wait, epm
+version GETs, package_policies listings, enrollment-token LISTs,
+fleet_server_hosts GET) stay on `kibana_system`. The split + rationale is
+documented in elastic_stack/defaults/main.yml (identity/which-class block).
+
+Fresh-source check (fetched 2026-10-21):
+- elasticsearch v8.19.23 KibanaOwnedReservedRoleDescriptors.kibanaSystem():
+  ManageApplicationPrivileges limited to "kibana-*" apps; fleet-related cluster
+  grants (write_fleet_secrets, .fleet-secrets* index) exist, but Kibana-side
+  fleet feature privileges are registered release-movable (fleet/server/plugin.ts
+  registerKibanaFeature; the fleet-setup reserved privilege is documented
+  "Intended for use by the elastic/fleet-server service account only").
+- https://www.elastic.co/guide/en/elasticsearch/reference/8.19/built-in-roles.html
+  (kibana_system: "should not be assigned to users as the granted permissions
+  may change between releases").
+
+Post-fix status: prep-only-live-run-pending (tracker closure = verification
+agent's call).

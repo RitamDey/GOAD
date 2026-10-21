@@ -285,8 +285,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/agent_policies"
     method: GET
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-xsrf: "true"
     return_content: yes
@@ -399,8 +399,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/agent_policies"
     method: GET
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
@@ -461,8 +461,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/enrollment_api_keys"
     method: POST
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
@@ -611,8 +611,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/fleet_server_hosts"
     method: POST
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
@@ -662,8 +662,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/outputs/fleet-default-output"
     method: PUT
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
@@ -752,8 +752,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
     method: POST
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
@@ -795,8 +795,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
     method: POST
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
@@ -968,8 +968,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies/{{ endpoint_policy_id }}"
     method: PUT
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
@@ -1326,8 +1326,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/enrollment_api_keys"
     method: POST
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"

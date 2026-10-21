@@ -29,6 +29,26 @@ elastic_heap: "6g"
 # stock-credential convention (elk runs ES 7.x with security off; 8.x mandates
 # security, so we keep the stock elastic/changeme pair). Override via instance
 # vars if you want different values - every consumer reads these variables.
+#
+# Which identity calls which Kibana/Fleet API class (#16):
+#   user: "elastic" (superuser) - Fleet BOOTSTRAP/WRITE calls: /api/fleet/setup,
+#     agent-policy id lookups + Fleet Server policy wait, enrollment-token
+#     CREATE, Fleet Server host registration, default-output update, the
+#     endpoint/windows package-policy CREATEs and the Defend detect-mode PUT.
+#     Rationale (docs fetched 2026-10-21): the kibana_system reserved role
+#     (elasticsearch v8.19.23 KibanaOwnedReservedRoleDescriptors.kibanaSystem)
+#     manages application privileges only for "kibana-*" apps; the fleet
+#     feature's privileges (fleet all/read, epm, integrations, agents...) are
+#     release-movable and the fleet-setup reserved privilege is explicitly
+#     "Intended for use by the elastic/fleet-server service account only"
+#     (fleet/server/plugin.ts registerKibanaFeature reserved block). Whether
+#     kibana_system holds every Fleet feature privilege live is UNPROVEN - the
+#     superuser removes the ambiguity at zero lab cost.
+#   user: "kibana_system" - REMAINING READ-ONLY calls: the /api/status wait,
+#     the epm package-version GETs, the package_policies GET listings, the
+#     enrollment_api_keys LIST GETs and the fleet_server_hosts GET. If a live
+#     run proves kibana_system carries the full Fleet feature privileges,
+#     these may stay; the split is documented here either way.
 elastic_password: "changeme"
 kibana_system_password: "changeme"
 
