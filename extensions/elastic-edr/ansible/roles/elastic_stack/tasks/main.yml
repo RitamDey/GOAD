@@ -1186,10 +1186,54 @@
   timeout: 300
   when: pr_do_disable | bool
 
+- name: Verify effective rule posture after bulk action (#23)
+  ansible.builtin.uri:
+    # Read-after-write check: query the immutable (prepackaged) rules and
+    # require at least one rule in the TARGETED enabled-state. Response shape
+    # and filter syntax verified against the Kibana 8.19.23 API source
+    # (find_rules_route.gen.ts: FindRulesResponse = { page, perPage, total,
+    # data }; filter uses alert.attributes.<field>:<value> KQL -
+    # alert.attributes.enabled / alert.attributes.params.immutable per
+    # common/detection_engine/rule_management/rule_fields.ts, the same fields
+    # the Rules UI's KQL_FILTER_IMMUTABLE_RULES / KQL_FILTER_ENABLED_RULES
+    # / KQL_FILTER_DISABLED_RULES constants are built from).
+    url: "http://localhost:{{ kibana_port }}/api/detection_engine/rules/_find?page=1&per_page=1&filter={{ (('alert.attributes.params.immutable: true and alert.attributes.enabled: true') if (prepackaged_rules_enabled | bool) else ('alert.attributes.params.immutable: true and alert.attributes.enabled: false')) | urlencode }}"
+    method: GET
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      kbn-version: "{{ kbn_version }}"
+    return_content: yes
+    status_code: [200]
+  register: pr_effective
+  until: pr_effective.status == 200
+  retries: 5
+  delay: 5
+  timeout: 60
+  when: (pr_do_enable | default(false)) | bool or (pr_do_disable | default(false)) | bool
+
+- name: Fail if the bulk posture transition did not take effect (#23)
+  ansible.builtin.fail:
+    msg: >-
+      The prepackaged-rule bulk action reported success but the effective
+      posture check found NO prepackaged rules in the targeted enabled-state
+      ({{ 'enabled' if (prepackaged_rules_enabled | bool) else 'disabled' }}).
+      The posture marker was NOT written - the transition must be re-run.
+      Bulk response: {{ (de_bulk_enable.json if (pr_do_enable | default(false)) | bool else de_bulk_disable.json) | default({}) | to_nice_json | truncate(600) }}
+      Find response: {{ pr_effective.json | default({}) | to_nice_json | truncate(300) }}
+  when:
+    - (pr_do_enable | default(false)) | bool or (pr_do_disable | default(false)) | bool
+    - pr_effective.json.total | default(0) | int == 0
+
 - name: Persist the prepackaged-rules posture
   ansible.builtin.copy:
     # Explicit bool-to-string (no bool|lower chain): renders exactly
     # 'true'/'false', which is what the transition facts compare against.
+    # Persisted ONLY after the effective-state verification above passed
+    # (#23): no transition this run -> always persist; transition this run
+    # -> only after the _find read-back found >= 1 rule in the targeted
+    # enabled-state. A failed/empty transition leaves the marker unwritten,
+    # so the next provision re-runs the transition (correct retry loop).
     content: "{{ 'true' if (prepackaged_rules_enabled | bool) else 'false' }}"
     dest: "{{ state_dir }}/prepackaged-rules-state"
     mode: "0640"
