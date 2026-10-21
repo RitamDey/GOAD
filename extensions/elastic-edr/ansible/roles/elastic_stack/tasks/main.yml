@@ -385,7 +385,12 @@
     body_format: json
     body: {}
   register: fleet_setup
+  status_code: [200, 400]
   until: fleet_setup.status in [200, 400]
+  failed_when: >-
+    fleet_setup.status not in [200, 400] or
+    (fleet_setup.status == 400 and
+     (fleet_setup.json.message | default('')) is not search('(?i)already|initialized'))
   retries: 10
   delay: 5
   timeout: 30
@@ -728,6 +733,7 @@
         title: "Elastic Defend"
         version: "{{ endpoint_package_version }}"
   register: endpoint_policy
+  status_code: [200, 409]
   until: endpoint_policy.status in [200, 409]
   retries: 5
   delay: 5
@@ -781,6 +787,7 @@
         name: "windows"
         version: "{{ windows_package_version }}"
   register: windows_policy
+  status_code: [200, 409]
   until: windows_policy.status in [200, 409]
   retries: 5
   delay: 5
@@ -1000,6 +1007,7 @@
       version: "{{ endpoint_package_version }}"
       force: true
   register: endpoint_detect
+  status_code: [200, 409]
   until: endpoint_detect.status in [200, 409]
   retries: 5
   delay: 5
@@ -1032,7 +1040,12 @@
     body_format: json
     body: {}
   register: de_enable
+  status_code: [200, 400]
   until: de_enable.status in [200, 400]
+  failed_when: >-
+    de_enable.status not in [200, 400] or
+    (de_enable.status == 400 and
+     (de_enable.json.message | default('')) is not search('(?i)already|initialized'))
   retries: 10
   delay: 5
   timeout: 60
@@ -1131,7 +1144,12 @@
       query: 'alert.attributes.params.immutable: true'
       action: "enable"
   register: de_bulk_enable
+  status_code: [200, 400]
   until: de_bulk_enable.status in [200, 400]
+  failed_when: >-
+    de_bulk_enable.status not in [200, 400] or
+    (de_bulk_enable.status == 400 and
+     (de_bulk_enable.json.message | default('')) is not search('(?i)already|initialized'))
   retries: 10
   delay: 5
   timeout: 300
@@ -1152,7 +1170,12 @@
       query: 'alert.attributes.params.immutable: true'
       action: "disable"
   register: de_bulk_disable
+  status_code: [200, 400]
   until: de_bulk_disable.status in [200, 400]
+  failed_when: >-
+    de_bulk_disable.status not in [200, 400] or
+    (de_bulk_disable.status == 400 and
+     (de_bulk_disable.json.message | default('')) is not search('(?i)already|initialized'))
   retries: 10
   delay: 5
   timeout: 300
