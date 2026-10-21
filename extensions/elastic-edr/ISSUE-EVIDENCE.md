@@ -168,3 +168,187 @@ Fresh-source check (fetched 2026-10-21):
 
 Post-fix status: prep-only-live-run-pending (tracker closure = verification
 agent's call).
+---
+
+## Issue #4 -- structurally resolved at HEAD (no commit needed)
+
+Evidence at HEAD 864267a: extensions/elastic-edr/ansible/roles/elastic_stack/tasks/main.yml --
+grep _index_template over the whole file returns 0 hits (the priority-200 composable
+template PUT from 3142ff1 was removed by 29e19a5); the role uses ONLY logs@custom /
+metrics@custom component templates, so the template-priority collision risk as filed is
+structurally gone. The #31 fix rides the same @custom hooks.
+Fresh-source check: none needed (structural grep).
+Post-fix status: fixed-static-only (no collision surface remains).
+
+## Issue #5 -- open by design (live measurement)
+
+Evidence: no code change -- measuring real ingest against the 60-day ILM window requires
+a running stack. The C-14 README "Live-run validation checklist" row gives the exact
+command (GET _cat/indices?v&s=store.size:desc, daily for the first week; tighten
+elastic_ilm_retention_days per the Data retention section).
+Fresh-source check: none needed.
+Post-fix status: open-by-design.
+
+## Issue #12 -- open by design (live measurement)
+
+Same posture as #5: per-source telemetry readiness checks need live event flows.
+Static preparatory work only, per the plan's no-scope-creep rule.
+Fresh-source check: none needed.
+Post-fix status: open-by-design.
+
+## Issue #7 -- resolved by commit 864267a
+
+Evidence at HEAD 864267a: extensions/elastic-edr/ansible/roles/applocker/tasks/main.yml --
+the hashes/apply steps are merged into ONE task whose changed_when parses the explicit
+applocker_policy_changed=1 marker (ordering defect gone).
+Fresh-source check: none needed.
+Post-fix status: fixed-static-only.
+
+## Issue #36 -- resolved by commit 6d8fd16
+
+Evidence at HEAD (this run): extensions/elastic-edr/ansible/roles/elastic_stack/tasks/main.yml --
+status_code added to fleet_setup [200,400], endpoint_policy [200,409], windows_policy
+[200,409], endpoint_detect [200,409], de_enable [200,400], de_bulk_enable [200,400],
+de_bulk_disable [200,400]; failed_when body-validation on the four 400-accepting tasks
+(only the documented already/initialized 400 is terminal).
+Fresh-source check: https://docs.ansible.com/projects/ansible/latest/collections/ansible/builtin/uri_module.html
+(status_code: "list of valid, numeric, HTTP status codes that signifies success";
+Default: [200]; fetched this session).
+Post-fix status: fixed-static-only.
+
+## Issue #19 -- resolved by commit 714475d
+
+Evidence: elastic_stack/tasks/main.yml "Ensure the elastic-agent service is running and
+enabled" -- start_mode removed, enabled: true set; grep start_mode in this Linux role = 0
+(the win_service start_mode uses in elastic_agent_win/applocker are correct for that
+module and untouched).
+Fresh-source check: https://docs.ansible.com/projects/ansible/latest/collections/ansible/builtin/service_module.html
+(no start_mode param; enabled = "Whether the service should start on boot"; fetched).
+Post-fix status: fixed-static-only.
+
+## Issue #23 -- resolved by commit 74393b1
+
+Evidence: elastic_stack/tasks/main.yml posture block -- "Verify effective rule posture
+after bulk action (#23)" read-after-write _find (filter=alert.attributes.params.immutable:
+true AND alert.attributes.enabled:true|false), "Fail if the bulk posture transition did
+not take effect (#23)" diagnostics, marker persisted only after a green verification
+(truth table for first-enable / re-run-no-op / first-disable / bulk-400 / find-500 /
+malformed-200 all marker-consistent -- recorded in the commit body).
+Fresh-source check: Kibana v8.19.23 bulk_actions_route.gen.ts (BulkEditActionResponse:
+attributes.results{updated,created,deleted,skipped} + summary{failed,skipped,succeeded,total}
++ errors) + find_rules_route.gen.ts (FindRulesResponse {page,perPage,total,data}) +
+common/detection_engine/rule_management/rule_fields.ts (PARAMS_IMMUTABLE_FIELD /
+ENABLED_FIELD). All fetched this session.
+Post-fix status: fixed-static-only.
+
+## Issue #25 -- resolved by commit 1c0f111
+
+Evidence: extensions/elastic-edr/ansible/roles/health_assertions/tasks/aggregate.yml --
+endpoint_rollup_4688_check / endpoint_rollup_4104_check facts (selectattr on the exact
+'CHECK' strings verify_agents.yml:85-86 records) + the roll-up warning's OR-condition and
+message extended; warnings stay non-fatal per the documented aggregate design.
+Fresh-source check: none needed.
+Post-fix status: fixed-static-only.
+
+## Issue #31 -- resolved by commit ef9cc00
+
+Evidence: elastic_stack/tasks/main.yml -- index.number_of_replicas: 0 in BOTH the
+logs@custom and metrics@custom component-template PUT bodies and in the renamed
+"Apply ILM and zero-replica settings to existing logs and metrics data streams" task;
+template-vs-component precedence caveat documented in the comment block.
+Fresh-source check: https://www.elastic.co/guide/en/elasticsearch/reference/8.19/index-templates.html
+(component-template inheritance + precedence rules; fetched this session).
+Post-fix status: fixed-static-only (live inheritance check on the C-14 checklist).
+
+## Issue #33 -- resolved by commit 0b5fd59
+
+Evidence: no_log: true on 7 secret-bearing elastic_stack tasks (service-token create +
+set_fact, 2x enrollment-token create + set_fact, fleet-server install command), the
+install.yml token-read pre_task, and the elastic_agent_win MSI task; grep no_log in
+extensions/elastic-edr/ansible/ = 9 (was 1). The changeme lab passwords deliberately stay
+visible (user decision; the issue excludes them). Downstream until/when/changed_when
+consumers verified unaffected (no_log hides display, not the registered variable).
+Fresh-source check: none needed.
+Post-fix status: fixed-static-only.
+
+## Issue #51 -- resolved by commit fb1cc74
+
+Evidence: health_assertions/tasks/aggregate.yml -- expected_agents / reported_agents /
+missing_agents census facts from groups['elastic-edr_agents'] (group name cross-checked
+against install.yml play 2 hosts: and the extension inventory's
+[elastic-edr_agents:children]), expected/reported counts in the no-report fail message,
+non-fatal missing-endpoints warning.
+Fresh-source check: none needed.
+Post-fix status: fixed-static-only.
+
+## Issue #52 -- resolved by commit fb1cc74
+
+Evidence: extensions/elastic-edr/ansible/install.yml -- any_errors_fatal: true on all
+three plays + header comment documenting the --tags partial-run caveat (minimal
+acceptable fix per plan C-6a; the fact-passing variant was evaluated and dropped as
+bypassable under partial tag runs).
+Fresh-source check: none needed.
+Post-fix status: fixed-static-only.
+
+## Issue #16 -- partially addressed by commit 756da82
+
+Docs outcome B per plan C-12: the docs do NOT conclusively grant kibana_system every
+Fleet feature privilege. 9 bootstrap/WRITE call sites switched to user: "elastic"
+(agent-policy id lookups x2, 2x enrollment-token create, fleet_server_hosts register,
+default-output update, 2x package-policy create, Defend detect-mode PUT); 8 READ call
+sites stay on kibana_system, documented per-class in
+elastic_stack/defaults/main.yml (identity-map comment block).
+Fresh-source check: elasticsearch v8.19.23 KibanaOwnedReservedRoleDescriptors.java
+(kibanaSystem descriptor: cluster grants + ManageApplicationPrivileges LIMITED to
+"kibana-*" applications; write_fleet_secrets etc.) + built-in-roles.html
+("should not be assigned to users as the granted permissions may change between
+releases") + kibana issue #51688 (kibana_system intentionally constrained). All fetched
+this session.
+Post-fix status: prep-only-live-run-pending (the 8 remaining kibana_system GETs are the
+live question; any 403 -> switch the same way).
+
+## Issue #34 -- resolved by commit 69547fe
+
+Evidence: sysmonconfig-export.xml Event ID 3 semantics comment block (different fields
+ANDed / same-field values ORed / exclude precedence, both blind spots by design, broad
+escape hatch) + README Event ID 3 paragraph cross-reference. Comments-only verified
+(XML with comments stripped is whitespace-identical to the pre-change structure).
+Fresh-source check: none needed.
+Post-fix status: fixed-static-only.
+
+## Issue #40 -- resolved by commit 69547fe
+
+Evidence: sysmonconfig-export.xml Event ID 22 DNS-posture comment block (always-vs-
+filtered exclusions, C2-lookalike trade-off, both broadening paths, endpoint-side
+no-recovery caveat) + README Event ID 22 paragraph.
+Fresh-source check: none needed.
+Post-fix status: fixed-static-only.
+
+## Issue #45 -- label resolved by commit 5b4d4fe; section-comment residue resolved by commit 69547fe
+
+Evidence: sysmonconfig-export.xml -- the "Ports: Tor" heading replaced by a
+remote-access/tunneling heading carrying the IANA citation (1723/tcp = pptp, RFC 2637;
+9001/9030 are conventions, not registry assignments); the PPTP rule comment says
+"suggests, not proves". No Event ID 3 inclusion-scope change (per the issue constraint).
+Fresh-source check: https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.csv
+(pptp,1723,tcp,...,RFC 2637; fetched 2026-10-21).
+Post-fix status: fixed-static-only.
+
+## Issue #38 -- branches resolved by commit 5b4d4fe; stale-comment residue resolved by commit 69547fe
+
+Evidence: sysmonconfig-export.xml Event ID 7 -- the stock "disabled by default" comment
+above the ACTIVE include block replaced with an honest one; the two Rule branches
+("DLL from user-writable path" OR-group / "Selected DLL names from user-writable
+processes" AND-group) and the README semantics untouched.
+Fresh-source check: none needed.
+Post-fix status: fixed-static-only.
+
+## Standing residue (honest)
+
+- Zero live runs: every fix above is static verification only. The README
+  "Live-run validation checklist" (C-14) is the runbook for #5, #12, #28, #16,
+  #37-enum, #10-path, #23-marker, #31-replicas.
+- #16's remaining 8 kibana_system GETs: live 403 test pending.
+- #4: no commit because the collision surface no longer exists at HEAD (grep
+  evidence above); the review agent re-greps before closing.
+- #5 / #12: open by design until the home-lab run measures ingest.
