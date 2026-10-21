@@ -528,11 +528,16 @@
     delay: 5
     timeout: 300
 
-- name: Ensure the elastic-agent service is running
+# ansible.builtin.service has NO start_mode parameter (that belongs to
+# ansible.windows.win_service; fetched docs this session:
+# https://docs.ansible.com/projects/ansible/latest/collections/ansible/builtin/service_module.html
+# - the builtin module's boot-time enablement param is `enabled: boolean`).
+# start_mode: auto here would fail module-arg validation on first run.
+- name: Ensure the elastic-agent service is running and enabled
   ansible.builtin.service:
     name: elastic-agent
     state: started
-    start_mode: auto
+    enabled: true
 
 # Register the Fleet Server host (LAN IP, NOT 127.0.0.1) so the Fleet UI shows it
 # and every agent policy defaults to it (elastic-container / LME pattern).
