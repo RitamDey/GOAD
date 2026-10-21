@@ -1,0 +1,15 @@
+# health_assertions role defaults
+#
+# Post-install validation for the emulation extension: instead of trusting
+# that every task succeeded, this role polls the deployed state and fails
+# loudly with a per-item diagnosis when something is not healthy.
+#
+# File layout (task includes, so each stage stays independently re-runnable):
+#   tasks/main.yml               - dispatcher (see the stage var)
+#   tasks/verify_stack.yml       - play 1: Caldera server-side assertions
+#   tasks/verify_agents.yml      - play 2: per-windows-host ART assertions
+#   tasks/aggregate.yml          - play 3: cross-host roll-up table + grade
+#
+# Tunables:
+health_assertions_server_retries: 12   # x5s = 1 min for the Caldera API
+health_assertions_agents_retries: 6    # x10s = 1 min for ART module import

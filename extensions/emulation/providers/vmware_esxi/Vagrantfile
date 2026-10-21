@@ -1,0 +1,11 @@
+boxes.append(
+    { :name => "EMULATION",
+      :ip => "{{ip_range}}.54",
+      :box => "bento/ubuntu-22.04",
+      :box_version => "202401.31.0",
+      :os => "linux",
+      :cpus => 2,
+      :mem => 8000,
+      :forwarded_port => [ {:guest => 22, :host => 2212, :id => "ssh"} ]
+    }
+)

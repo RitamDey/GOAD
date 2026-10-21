@@ -1,0 +1,7 @@
+# handlers for the caldera_server role
+
+- name: Restart caldera
+  ansible.builtin.systemd:
+    name: "{{ caldera_service_name }}"
+    state: restarted
+    daemon_reload: yes

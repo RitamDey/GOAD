@@ -1,0 +1,14 @@
+# emulation extension : install playbook
+# Play 1 : deploy the Caldera 5.3.0 server (emu + sandcat + atomic plugins)
+#          on the emulation VM and assert the UI + API answer.
+# Play 2 : install the Atomic Red Team PowerShell framework on every domain
+#          windows machine (Defender path exclusions for the ART dirs only).
+# Play 3 : roll up the per-host ART results into one table on the emulation
+#          VM (stage: aggregate).
+
+- name: Install Caldera server (emulation)
+  hosts: emulation_server
+  become: yes
+  roles:
+    - { role: 'caldera_server', tags: 'caldera' }
+    - { role: 'health_assertions', tags: 'health_assertions', stage: 'verify_stack' }

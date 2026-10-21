@@ -1,0 +1,7 @@
+# health_assertions : cross-host roll-up (play 3, runs once on the EMULATION VM)
+# Populated in commit 2 with the atomic_redteam role. Kept as a task file
+# now so the dispatcher (main.yml) is valid from commit 1 on.
+
+- name: Aggregate roll-up is delivered with the atomic_redteam role (commit 2)
+  ansible.builtin.debug:
+    msg: "aggregate stage: nothing to roll up yet (ART role ships in the next commit)."

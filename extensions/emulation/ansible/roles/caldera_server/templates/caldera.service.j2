@@ -1,0 +1,25 @@
+[Unit]
+Description=MITRE Caldera adversary emulation server (GOAD emulation extension)
+Documentation=https://caldera.mitre.org
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ caldera_user }}
+Group={{ caldera_user }}
+WorkingDirectory={{ caldera_install_dir }}
+ExecStart={{ caldera_install_dir }}/venv/bin/python server.py -E local
+Restart=on-failure
+RestartSec=10
+
+# Hardening: caldera needs to write its own data dirs (data/, payloads)
+# inside the install tree, so no ProtectSystem=strict - the write mask keeps
+# /etc and /usr read-only while leaving the install tree writable.
+ProtectSystem=full
+ReadWritePaths={{ caldera_install_dir }}
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

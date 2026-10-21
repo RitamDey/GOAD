@@ -1,0 +1,104 @@
+# health_assertions : server-side verification (play 1, runs on the EMULATION VM)
+# Asserts the deployed Caldera control plane is healthy BEFORE the windows
+# agents are touched in play 2. Three independent assertions, each with its
+# own retry budget and a loud, diagnostic failure:
+#   1. Caldera API reachable + authenticated (the lab red api key works)
+#   2. The emu / sandcat / atomic plugins are loaded (they show up in the API)
+#   3. One-screen health summary for the operator
+# The retry waits run inside block:/rescue: so the diagnostics actually
+# EXECUTE on timeout - a task placed after a until:-retry task can never
+# run, because retry exhaustion fails the host first (review lesson B4).
+
+- name: Verify the Caldera API (authenticated)
+  block:
+    - name: Poll the Caldera API until it answers with the red api key
+      ansible.builtin.uri:
+        url: "http://localhost:{{ caldera_port }}/api/rest"
+        method: GET
+        headers:
+          KEY: "{{ caldera_api_key_red }}"
+        status_code: 200
+      register: caldera_api_poll
+      until: caldera_api_poll.status == 200
+      retries: "{{ health_assertions_server_retries }}"
+      delay: 5
+      timeout: 15
+
+    - name: Assert the API returned the plugin list
+      ansible.builtin.assert:
+        that:
+          - caldera_api_poll.status == 200
+        fail_msg: "Caldera API did not answer 200 with the lab red api key on port {{ caldera_port }}."
+        success_msg: "Caldera API reachable + authenticated (http://{{ ansible_host }}:{{ caldera_port }})"
+
+  rescue:
+    - name: Diagnose the caldera service (API verify failed)
+      ansible.builtin.command: systemctl status caldera --no-pager -l
+      changed_when: false
+      register: caldera_status
+      failed_when: false
+
+    - name: Fetch the last caldera log lines
+      ansible.builtin.command: journalctl -u caldera -n 40 --no-pager
+      changed_when: false
+      register: caldera_logs
+      failed_when: false
+
+    - name: Report the Caldera API failure diagnostics
+      ansible.builtin.fail:
+        msg: |
+          Caldera API verification failed on port {{ caldera_port }}.
+          ---- systemctl status ----
+          {{ caldera_status.stdout | default('unavailable') }}
+          ---- journalctl (last 40 lines) ----
+          {{ caldera_logs.stdout | default('unavailable') }}
+
+- name: Verify the emulation-critical plugins are loaded
+  block:
+    - name: Read the Caldera config through the API (plugin list)
+      ansible.builtin.uri:
+        url: "http://localhost:{{ caldera_port }}/api/v2/plugins"
+        method: GET
+        headers:
+          KEY: "{{ caldera_api_key_red }}"
+        status_code: 200
+        return_content: yes
+      register: caldera_plugins_api
+      retries: 3
+      delay: 5
+      until: caldera_plugins_api.status == 200
+
+    # emu / sandcat / atomic are the reason this extension exists - a server
+    # that came up without them is a failed install even if the UI is green.
+    - name: Assert emu + sandcat + atomic are all loaded
+      ansible.builtin.assert:
+        that:
+          - "'emu' in caldera_plugins_api.json | default({})"
+          - "'sandcat' in caldera_plugins_api.json | default({})"
+          - "'atomic' in caldera_plugins_api.json | default({})"
+        fail_msg: >-
+          Caldera is up but the emulation plugins are not all loaded
+          (emu={{ caldera_plugins_api.json | default({}) | ternary(caldera_plugins_api.json, {}) | select('in', ['emu']) | list | length > 0 }}).
+          Check conf/local.yml's plugins list and the journalctl output.
+        success_msg: "emu + sandcat + atomic plugins all loaded."
+
+  rescue:
+    - name: Report the plugin verification failure
+      ansible.builtin.fail:
+        msg: |
+          The emulation-critical plugins did not all load.
+          API response: {{ caldera_plugins_api.content | default('unavailable') | truncate(800) }}
+          Fix: check {{ caldera_install_dir | default('/opt/caldera') }}/conf/local.yml
+          (plugins list) and journalctl -u caldera for module import errors,
+          then re-run the install.
+
+- name: Show the server health summary
+  ansible.builtin.debug:
+    msg: |
+      ================== CALDERA SERVER HEALTH ==================
+      UI / API          : http://{{ ansible_host }}:{{ caldera_port }} ({{ caldera_api_poll.status | default('?') }})
+      red login         : red (see caldera_server defaults)
+      api auth          : OK (red api key accepted)
+      plugins verified  : emu, sandcat, atomic
+      pins recorded     : {{ state_dir }}/caldera-pins
+      ============================================================

@@ -1,0 +1,7 @@
+# health_assertions : endpoint verification (play 2, per windows agent)
+# Populated in commit 2 with the atomic_redteam role. Kept as a task file
+# now so the dispatcher (main.yml) is valid from commit 1 on.
+
+- name: Endpoint verification is delivered with the atomic_redteam role (commit 2)
+  ansible.builtin.debug:
+    msg: "verify_agents stage: nothing to assert yet (ART role ships in the next commit)."

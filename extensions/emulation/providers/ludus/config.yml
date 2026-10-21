@@ -1,0 +1,8 @@
+  - vm_name: "{{ range_id }}-EMULATION"
+    hostname: "{{ range_id }}-EMULATION"
+    template: ubuntu-22.04-x64-server-template
+    vlan: 10
+    ip_last_octet: 54
+    ram_gb: 8
+    cpus: 2
+    linux: true

@@ -1,0 +1,82 @@
+# emulation extension : caldera_server role defaults
+#
+# Pin Caldera to an EXACT release (fully reproducible lab).
+#   caldera_version     - the release TAG cloned at install time
+#   caldera_commit_sha  - the commit the tag points at (verified at build time
+#                         via the GitHub API; recorded here so a force-moved
+#                         tag is detectable on re-runs: if clone + checkout of
+#                         the tag does not land on this SHA, the role fails).
+# Tag 5.3.0 (published 2025-04-24) is an annotated tag object whose target
+# commit is b24f6e7a99cab19cbf417009bda9b9c6c81abc31.
+caldera_version: "5.3.0"
+caldera_commit_sha: "b24f6e7a99cab19cbf417009bda9b9c6c81abc31"
+caldera_repo_url: "https://github.com/mitre/caldera.git"
+
+# Submodule SHips at fixed SHAs in the 5.3.0 tree (gitmodules-verified). The
+# role clones with --recursive at the pinned tag, then asserts these SHAs so
+# an upstream submodule force-push cannot silently drift the lab.
+caldera_submodule_shas:
+  plugins/emu: "fdb0bab5c9c3e1f6fcff57cdd2a4d999955cb7b8"       # CTID adversary emulation plans
+  plugins/sandcat: "0a35cd525f1cfabfcf602282428055c41f144513"   # sandcat agent (2.9.0-0723cab)
+  plugins/atomic: "b90958810ffae1d328124f9e8af75f524616b27f"    # ART technique ingestion plugin
+
+# Caldera 5.3.0 supports python 3.9+ (verified: README + requirements python
+# check in conf/default.yml). ubuntu-22.04 ships python3.10 - no PPA needed.
+caldera_python_bin: python3.10
+
+# Install location + service user
+caldera_install_dir: /opt/caldera
+caldera_user: caldera
+
+# Server ports.
+#   8888 - the Caldera UI AND the default http contact (agent/Sandcat callback)
+#          port. One port serves both (conf/default.yml: port: 8888 +
+#          app.contact.http: http://0.0.0.0:8888). Windows hosts MUST be able
+#          to reach the emulation VM on 8888 or Sandcat can never check in -
+#          this is the day-one gotcha, see the README port matrix.
+caldera_port: 8888
+
+# Lab credentials (this is a lab - aligned with the stock changeme convention
+# of the elk / elastic-edr extensions). Written into conf/local.yml, which
+# Caldera reads INSTEAD of generating its own secure config (server.py's
+# ensure_local_config() only creates local.yml when it does not exist, so a
+# pre-seeded file wins and the values stay deterministic).
+caldera_red_password: "changeme"
+caldera_blue_password: "changeme"
+caldera_api_key_red: "ADMIN123"
+caldera_api_key_blue: "BLUEADMIN123"
+
+# local.yml hardening knobs kept at the default.yml values (lab-parity) but
+# made explicit so the config is fully owned by this extension.
+caldera_crypt_salt: "REPLACE_WITH_RANDOM_VALUE"
+caldera_encryption_key: "ADMIN123"
+
+# Plugins enabled in local.yml. The four stock ones plus the three this
+# extension exists for (emu = CTID emulation plans, sandcat = the agent,
+# atomic = ART technique import). NOTE: magma (the reporting UI) needs a
+# node build step and is left out deliberately; everything else in the
+# 5.3.0 plugin set is either a submodule-less python plugin or already
+# covered by default.yml's list.
+caldera_plugins:
+  - access
+  - atomic
+  - compass
+  - debrief
+  - emu
+  - fieldmanual
+  - manx
+  - response
+  - sandcat
+  - stockpile
+  - training
+
+# Systemd
+caldera_service_name: caldera
+caldera_systemd_dir: /etc/systemd/system
+
+# State directory (pin records for idempotent re-runs)
+state_dir: /etc/emulation
+
+# Health-check tuning
+caldera_health_retries: 30        # x5s = 2.5 min for the UI to answer 200
+caldera_health_delay: 5

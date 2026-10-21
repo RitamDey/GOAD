@@ -1,0 +1,12 @@
+; EXTENSION : EMULATION (Caldera + Atomic Red Team) -----------------
+[default]
+emulation ansible_host={{ip_range}}.54 ansible_connection=ssh ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+
+; Recipe associations -------------------
+[emulation_server]
+emulation
+
+; hosts that get the Atomic Red Team framework
+; usage : install.yml
+[emulation_agents:children]
+domain

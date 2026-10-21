@@ -1,0 +1,225 @@
+# emulation extension : Caldera 5.3.0 server deploy (emulation VM, ubuntu-22.04)
+#
+# Flow: deps -> dedicated user -> clone at pinned tag (+ submodule SHA
+# assertions) -> venv with the TAG's OWN requirements.txt (master drifts: its
+# aiohttp pin already differs from 5.3.0's) -> pre-seeded conf/local.yml (so
+# ensure_local_config() never generates random credentials) -> systemd unit
+# -> wait-for-200 health check -> access-info debug + pin records.
+#
+# Caldera 5.x is pure python at runtime: server.py is the entrypoint and the
+# go toolchain is only needed to BUILD sandcat payloads from source. This
+# role installs the prebuilt sandcat binaries that ship in the sandcat
+# submodule (payloads/sandcat.go-windows et al), so no golang install here.
+
+# ---- OS dependencies --------------------------------------------------------
+- name: Install Caldera OS dependencies
+  ansible.builtin.apt:
+    name:
+      - git
+      - python3.10
+      - python3.10-venv
+      - python3-pip
+      - zlib1g            # emu plugin: pyminizip dependency (libz)
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+
+# ---- Dedicated service user --------------------------------------------------
+- name: Create the caldera service user
+  ansible.builtin.user:
+    name: "{{ caldera_user }}"
+    shell: /usr/sbin/nologin
+    home: "{{ caldera_install_dir }}"
+    system: yes
+    comment: "Caldera adversary emulation server (GOAD emulation extension)"
+
+# ---- Clone at the pinned release --------------------------------------------
+- name: Check if the pinned checkout already exists
+  ansible.builtin.stat:
+    path: "{{ caldera_install_dir }}/server.py"
+  register: caldera_checkout
+
+- name: Clone Caldera at the pinned tag
+  ansible.builtin.git:
+    repo: "{{ caldera_repo_url }}"
+    dest: "{{ caldera_install_dir }}"
+    version: "{{ caldera_version }}"
+    recursive: yes
+    force: yes
+  become_user: "{{ caldera_user }}"
+  register: caldera_clone
+  when: not caldera_checkout.stat.exists
+
+# The tag pin alone is not a tamper-proof pin (tags can be force-moved) -
+# assert the checked-out commit AND every pinned submodule SHA. A mismatch
+# fails loudly instead of silently drifting the lab.
+- name: Assert the checked-out Caldera commit matches the recorded SHA
+  ansible.builtin.command: git rev-parse HEAD
+  args:
+    chdir: "{{ caldera_install_dir }}"
+  changed_when: false
+  register: caldera_head
+  failed_when: caldera_head.stdout | trim != caldera_commit_sha
+
+- name: Assert every pinned submodule commit
+  ansible.builtin.command: git rev-parse HEAD
+  args:
+    chdir: "{{ caldera_install_dir }}/{{ item.key }}"
+  loop: "{{ caldera_submodule_shas | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  changed_when: false
+  register: caldera_submodule_heads
+  failed_when: item.value != caldera_submodule_heads.results[ansible_loop.index0].stdout | trim
+  when: not caldera_checkout.stat.exists or caldera_clone is changed
+
+- name: Own the install tree
+  ansible.builtin.file:
+    path: "{{ caldera_install_dir }}"
+    state: directory
+    owner: "{{ caldera_user }}"
+    group: "{{ caldera_user }}"
+    recurse: yes
+
+# ---- Python venv + the tag's OWN pinned requirements -------------------------
+- name: Create the python venv
+  ansible.builtin.command:
+    cmd: "{{ caldera_python_bin }} -m venv venv"
+    chdir: "{{ caldera_install_dir }}"
+    creates: "{{ caldera_install_dir }}/venv/bin/activate"
+
+- name: Install the 5.3.0 requirements (exact pins, from the checkout)
+  ansible.builtin.pip:
+    requirements: "{{ caldera_install_dir }}/requirements.txt"
+    virtualenv: "{{ caldera_install_dir }}/venv"
+    virtualenv_python: "{{ caldera_python_bin }}"
+  become_user: "{{ caldera_user }}"
+
+- name: Install the emu plugin dependency (pyminizip)
+  ansible.builtin.pip:
+    name: "pyminizip==0.2.6"
+    virtualenv: "{{ caldera_install_dir }}/venv"
+    virtualenv_python: "{{ caldera_python_bin }}"
+  become_user: "{{ caldera_user }}"
+
+# ---- Pre-seeded conf/local.yml ------------------------------------------------
+# server.py: ensure_local_config() only writes conf/local.yml when ABSENT.
+# Shipping our own file makes every credential/port deterministic and pins
+# the plugin set (emu + sandcat + atomic included).
+- name: Deploy the pre-seeded local.yml
+  ansible.builtin.template:
+    src: local.yml.j2
+    dest: "{{ caldera_install_dir }}/conf/local.yml"
+    owner: "{{ caldera_user }}"
+    group: "{{ caldera_user }}"
+    mode: "0640"
+  notify: Restart caldera
+
+# ---- Firewall: open the UI / agent-callback port -------------------------------
+# 8888 is BOTH the UI port and the Sandcat http contact. Every domain windows
+# machine connects back to it. ufw is left untouched if inactive (the lab's
+# ubuntu templates ship without a firewall enabled) - idempotent either way.
+- name: Check if ufw is active
+  ansible.builtin.command: ufw status
+  changed_when: false
+  register: caldera_ufw
+  failed_when: false
+
+- name: Allow the caldera port through ufw (when active)
+  community.general.ufw:
+    rule: allow
+    port: "{{ caldera_port }}"
+    proto: tcp
+  when: "'Status: active' in caldera_ufw.stdout"
+
+# ---- Systemd unit ---------------------------------------------------------------
+- name: Deploy the caldera systemd unit
+  ansible.builtin.template:
+    src: caldera.service.j2
+    dest: "{{ caldera_systemd_dir }}/{{ caldera_service_name }}.service"
+    mode: "0644"
+  notify: Restart caldera
+
+- name: Enable + start the caldera service
+  ansible.builtin.systemd:
+    name: "{{ caldera_service_name }}"
+    state: started
+    enabled: yes
+    daemon_reload: yes
+
+# ---- Health check: wait for a 200 from the UI -----------------------------------
+- name: Wait for the Caldera UI to answer
+  block:
+    - name: Poll the Caldera UI until it returns 200
+      ansible.builtin.uri:
+        url: "http://localhost:{{ caldera_port }}"
+        status_code: 200
+      register: caldera_ui
+      until: caldera_ui.status == 200
+      retries: "{{ caldera_health_retries }}"
+      delay: "{{ caldera_health_delay }}"
+      timeout: 10
+
+    - name: Assert the API answers with the lab api key
+      ansible.builtin.uri:
+        url: "http://localhost:{{ caldera_port }}/api/rest"
+        method: GET
+        headers:
+          KEY: "{{ caldera_api_key_red }}"
+        status_code: 200
+      register: caldera_api
+      until: caldera_api.status == 200
+      retries: 5
+      delay: 5
+
+  rescue:
+    - name: Diagnose the caldera service on health-check failure
+      ansible.builtin.command: systemctl status caldera --no-pager -l
+      changed_when: false
+      register: caldera_status
+      failed_when: false
+
+    - name: Fetch the last service log lines
+      ansible.builtin.command: journalctl -u caldera -n 40 --no-pager
+      changed_when: false
+      register: caldera_logs
+      failed_when: false
+
+    - name: Report the caldera health-check failure diagnostics
+      ansible.builtin.fail:
+        msg: |
+          Caldera did not become healthy on port {{ caldera_port }}.
+          ---- systemctl status ----
+          {{ caldera_status.stdout | default('unavailable') }}
+          ---- journalctl (last 40 lines) ----
+          {{ caldera_logs.stdout | default('unavailable') }}
+
+# ---- Pin records + access info ---------------------------------------------------
+- name: Persist the install pins (version / SHAs) in the state dir
+  ansible.builtin.copy:
+    dest: "{{ state_dir }}/caldera-pins"
+    content: |
+      caldera_tag={{ caldera_version }}
+      caldera_commit={{ caldera_commit_sha }}
+      {% for name, sha in caldera_submodule_shas | dict2items %}
+      {{ name }}={{ sha }}
+      {% endfor %}
+      installed_at={{ ansible_date_time.iso8601 }}
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Show Caldera access information
+  ansible.builtin.debug:
+    msg: |
+      ================= CALDERA (emulation extension) =================
+      UI (red user)   : http://{{ ansible_host }}:{{ caldera_port }}
+      red login       : red / {{ caldera_red_password }}
+      blue login      : blue / {{ caldera_blue_password }}
+      red API key     : {{ caldera_api_key_red }}
+      config          : {{ caldera_install_dir }}/conf/local.yml
+      service         : systemctl {{ 'status' }} {{ caldera_service_name }}
+      Sandcat contact : http://{{ ansible_host }}:{{ caldera_port }}
+        (the UI and the agent callback share port {{ caldera_port }} -
+         windows hosts must be able to reach this VM on it)
+      ==================================================================

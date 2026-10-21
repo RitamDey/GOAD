@@ -1,0 +1,11 @@
+{
+    "name": "emulation",
+    "description": "Add a MITRE Caldera 5.x adversary-emulation server with the emu (CTID Adversary Emulation Plans), atomic and sandcat plugins, plus Atomic Red Team atomics on all domain windows machines",
+    "machines": [
+        "emulation"
+    ],
+    "compatibility": [
+        "*"
+    ],
+    "impact": "add an emulation (Caldera) machine and install the Atomic Red Team PowerShell framework on all domain windows machines (with Windows Defender path exclusions for the ART directories)"
+}

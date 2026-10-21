@@ -1,0 +1,53 @@
+# Caldera main config for the GOAD emulation extension.
+#
+# This file is deployed BEFORE the first server start, so server.py's
+# ensure_local_config() sees an existing conf/local.yml and never generates
+# its own random credentials - every value below is deterministic.
+#
+# Values not listed here fall through to conf/default.yml (which server.py
+# merges under this one for the -E local environment).
+crypt_salt: "{{ caldera_crypt_salt }}"
+encryption_key: "{{ caldera_encryption_key }}"
+
+users:
+  red:
+    red: "{{ caldera_red_password }}"
+    red-admin: admin
+  blue:
+    blue: "{{ caldera_blue_password }}"
+    blue-admin: admin
+
+api_key_red: "{{ caldera_api_key_red }}"
+api_key_blue: "{{ caldera_api_key_blue }}"
+
+host: 0.0.0.0
+port: "{{ caldera_port }}"
+
+# The default http contact shares the UI port - this is what sandcat checks
+# into (conf/default.yml ships the same pairing).
+app.contact.http: http://0.0.0.0:{{ caldera_port }}
+
+# The atomic planner (default for operations) + the plugin set this
+# extension exists for: emu (CTID adversary emulation plans), sandcat (the
+# agent), atomic (ART technique import).
+objects.planners.default: atomic
+
+plugins:
+{% for plugin in caldera_plugins %}
+- {{ plugin }}
+{% endfor %}
+
+requirements:
+  go:
+    command: go version
+    type: installed_program
+    version: 1.19
+  python:
+    attr: version
+    module: sys
+    type: python_module
+    version: 3.9.0
+
+ability_refresh: 60
+reports_dir: /tmp
+exfil_dir: /tmp/caldera
