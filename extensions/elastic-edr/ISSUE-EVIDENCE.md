@@ -124,3 +124,24 @@ home-lab run.
 ---
 
 (Blocks for C-2..C-14 issues appended below as those commits land.)
+
+---
+
+## Issue #28 -- prep-only (commit lands with C-11)
+
+Restructured to the documented self-enrollment form: --url=https://localhost:{{ fleet_server_port }}
++ --insecure (the agent auto-generates a self-signed cert when no
+--fleet-server-cert* flags are given; per the 8.19 command reference,
+enrolling into a self-signed-cert Fleet Server requires --insecure).
+Added failed_when on the install rc + a log-tail diagnostic task because the
+install command is no_log'd (#33) - failures previously surfaced nothing.
+Live confirmation of BOTH forms (old --url=http://localhost:5601 vs new
+--url=https://localhost:8220 + --insecure) still pending home-lab run.
+
+Fresh-source check: https://www.elastic.co/guide/en/fleet/8.19/elastic-agent-cmd-options.html
+("Fleet Server URL to use to enroll the Elastic Agent into Fleet"; documented
+setup example passes --url=https://fleet-server:8220; self-signed + --insecure
+rule quoted in the task comment).
+
+Post-fix status: prep-only-live-run-pending.
+

@@ -513,7 +513,8 @@
 - name: Install and enroll the Fleet Server agent
   ansible.builtin.command: >-
     /tmp/elastic-agent-{{ elastic_agent_linux_version }}-linux-x86_64/elastic-agent install
-    --url=http://localhost:{{ kibana_port }}
+    --url=https://localhost:{{ fleet_server_port }}
+    --insecure
     --enrollment-token={{ fs_enrollment_token }}
     --fleet-server-es=http://127.0.0.1:{{ es_http_port }}
     --fleet-server-service-token={{ fleet_server_service_token }}
@@ -522,10 +523,44 @@
     --fleet-server-port={{ fleet_server_port }}
     --force --non-interactive
   register: fs_install
+  # --url semantics (#28): Elastic defines --url as "Fleet Server URL to use to
+  # enroll the Elastic Agent into Fleet" (8.19 command reference,
+  # https://www.elastic.co/guide/en/fleet/8.19/elastic-agent-cmd-options.html,
+  # fetched this session; the documented "set up Fleet Server" example passes
+  # --url=https://fleet-server:8220 - the Fleet Server's OWN listener, not
+  # Kibana). During bootstrap the enrolling agent IS this same host, so the
+  # URL points at the local Fleet Server listener this command creates
+  # (https://localhost:8220). With no --fleet-server-cert* flags the agent
+  # auto-generates a self-signed certificate, and per the same docs page
+  # "Remote Elastic Agents enrolling into a Fleet Server with self-signed
+  # certificates must specify the --insecure flag" - --insecure is therefore
+  # mandatory for this self-enrollment. Whether the previous
+  # --url=http://localhost:5601 (Kibana) form also works live is UNPROVEN;
+  # both forms are recorded in ISSUE-EVIDENCE.md for the live run to settle.
   # Command line carries --fleet-server-service-token / --enrollment-token
   # (visible in ps + logs on the host otherwise) - #33.
   no_log: true
   when: not fs_agent_installed.stat.exists
+  failed_when: fs_install.rc != 0
+
+# fs_install is no_log'd, so its output is hidden even on failure - surface WHY
+# bootstrap failed from the agent's own log (installation-layout: data dir holds
+# elastic-agent-*/logs/elastic-agent.ndjson) before the play dies.
+- name: "Diagnose Fleet Server bootstrap failure (#28/#33 - fs_install output is no_log'd)"
+  ansible.builtin.command: journalctl -u elastic-agent -n 40 --no-pager
+  changed_when: false
+  failed_when: false
+  register: fs_bootstrap_logs
+  when: fs_install.rc | default(0) != 0
+
+- name: Report Fleet Server bootstrap failure with agent log tail
+  ansible.builtin.fail:
+    msg: >-
+      Fleet Server install/enroll failed (rc={{ fs_install.rc | default('?') }}).
+      The install command output is no_log'd (token-bearing command line, #33).
+      Agent service log tail:
+      {{ fs_bootstrap_logs.stdout | default('unavailable - elastic-agent service may not exist yet; check /opt/Elastic/Agent/data/elastic-agent-*/logs/elastic-agent.ndjson manually') }}
+  when: fs_install.rc | default(0) != 0
 
 - name: Wait for the Fleet Server to listen ({{ fleet_server_port }})
   ansible.builtin.wait_for:
