@@ -426,6 +426,7 @@
     password: "{{ elastic_password }}"
     body_format: json
     body: {}
+  no_log: true
   register: fs_service_token
   until: fs_service_token.status == 200
   retries: 5
@@ -434,6 +435,7 @@
 - name: Set fact fleet server service token
   ansible.builtin.set_fact:
     fleet_server_service_token: "{{ fs_service_token.json.token.value }}"
+  no_log: true
 
 - name: List existing enrollment tokens
   ansible.builtin.uri:
@@ -469,6 +471,7 @@
     body:
       name: "{{ fleet_server_enrollment_token_name }}"
       policy_id: "{{ fs_policy_id }}"
+  no_log: true
   register: fs_create_token
   when: not fs_token_present
 
@@ -478,6 +481,7 @@
       {{ (fs_create_token.json.item.api_key | default(''))
          if (not fs_token_present)
          else (tokens_all.json['items'] | selectattr('name', 'equalto', fleet_server_enrollment_token_name) | map(attribute='api_key') | first) }}
+  no_log: true
 
 - name: Check if the Fleet Server agent is already installed
   ansible.builtin.stat:
@@ -518,6 +522,9 @@
     --fleet-server-port={{ fleet_server_port }}
     --force --non-interactive
   register: fs_install
+  # Command line carries --fleet-server-service-token / --enrollment-token
+  # (visible in ps + logs on the host otherwise) - #33.
+  no_log: true
   when: not fs_agent_installed.stat.exists
 
 - name: Wait for the Fleet Server to listen ({{ fleet_server_port }})
@@ -1294,6 +1301,7 @@
     body:
       name: "{{ enrollment_token_name }}"
       policy_id: "{{ policy_id }}"
+  no_log: true
   register: create_token
   when: not token_present
 
@@ -1303,6 +1311,7 @@
       {{ (create_token.json.item.api_key | default(''))
          if (not token_present)
          else (tokens.json['items'] | selectattr('name', 'equalto', enrollment_token_name) | map(attribute='api_key') | first) }}
+  no_log: true
 
 - name: Persist enrollment token for the windows agent play
   ansible.builtin.copy:

@@ -45,6 +45,9 @@
   register: ea_msi
   failed_when: false
   changed_when: ea_msi.rc in [0, 1641, 3010]
+  # INSTALLARGS carries the enrollment token inline - suppress it from run
+  # output (#33); rc/changed_when stay evaluated by the play.
+  no_log: true
 
 - name: Fail with installer details if Elastic Agent MSI failed
   ansible.builtin.fail:

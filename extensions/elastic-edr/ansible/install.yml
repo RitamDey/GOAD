@@ -36,6 +36,10 @@
       become: yes
       changed_when: false
       register: edr_token
+      # stdout IS the enrollment token - suppress it from run output (#33);
+      # the registered value stays available to the play (no_log only hides
+      # display, not the variable).
+      no_log: true
 
     - name: Set enrollment token fact
       ansible.builtin.set_fact:
