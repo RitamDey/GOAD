@@ -71,13 +71,32 @@
          | selectattr('scriptblock_4104', 'defined')
          | selectattr('scriptblock_4104', 'equalto', 'CHECK') | list | length }}
 
+- name: Compute expected vs reported endpoint census (#51)
+  ansible.builtin.set_fact:
+    expected_agents: "{{ groups['elastic-edr_agents'] | default([]) | sort }}"
+    reported_agents: "{{ endpoint_rollup | default([]) | sort }}"
+    missing_agents: >-
+      {{ groups['elastic-edr_agents'] | default([])
+         | difference(endpoint_rollup | default([])) | sort }}
+
 - name: Fail if no endpoint reported a health result
   ansible.builtin.fail:
     msg: >-
       No endpoint reported an endpoint_health_report - the verify_agents
       stage (play 2) either never ran or every host failed before the
       record step. Nothing to roll up; re-run the windows agents play.
+      expected={{ expected_agents | default([]) | length }}
+      reported={{ reported_agents | default([]) | length }}
   when: (endpoint_rollup | default([])) | length == 0
+
+- name: Warn when endpoints are missing from the aggregate report (#51)
+  ansible.builtin.debug:
+    msg: >-
+      {{ missing_agents | default([]) | length }} endpoint(s) expected in
+      [elastic-edr_agents] never reported an endpoint_health_report:
+      {{ missing_agents | default([]) | join(', ') }}. Their hosts likely
+      failed earlier in play 2; scroll up for the per-host error.
+  when: (missing_agents | default([])) | length > 0
 
 - name: Warn about unhealthy endpoints (non-fatal, per design)
   ansible.builtin.debug:
