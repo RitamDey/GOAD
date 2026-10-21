@@ -74,5 +74,11 @@ only - nothing else about Defender's posture changes.
 ```
 instance_id> install_extension emulation
 ```
-Uninstall: `ansible/uninstall.yml` (per-host teardown, mirrors install.yml -
-see the README's Uninstall section).
+Uninstall: `ansible/uninstall.yml` (2 plays, mirrors install.yml - run it
+against the instance inventory; the goad CLI has no uninstall command on
+main, the playbook is the supported teardown). It removes the ART dirs +
+module + profile line + the two ART Defender exclusions on the agents, and
+the caldera service + `/opt/caldera` + `/etc/emulation` + the ufw rule on
+the emulation VM. Kept on purpose: git, every other Defender setting, the
+VM itself. Caldera operation reports (`/opt/caldera/data`) are printed as a
+copy-me reminder before deletion.

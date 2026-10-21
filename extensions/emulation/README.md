@@ -137,9 +137,33 @@ instance_id> install_extension emulation
 
 ## Uninstall
 
-See the Uninstall section (commit 3 ships `ansible/uninstall.yml`): removes
-Caldera (systemd + /opt/caldera) on the emulation VM and ART (dirs, profile
-entry, Defender exclusions) on the agents.
+Per-host teardown of everything the extension puts ON THE ENDPOINTS plus the
+server - `ansible/uninstall.yml` (2 plays, mirrors install.yml):
+
+```
+ansible-playbook -i <workspace>/<instance>/emulation_inventory \
+  extensions/emulation/ansible/uninstall.yml
+```
+
+(The goad CLI on main has no `uninstall_extension` command - `goad.py` only
+calls `run_extension` with `install=True` - so the playbook IS the supported
+teardown path. `disable_extension emulation` drops it from the instance's
+enabled list.)
+
+Removes: on the agents, `C:\Tools\AtomicRedTeam` (atomics + installers), the
+`invoke-atomicredteam` module at the pinned version (`Uninstall-Module
+-AllUsers`), the AllUsers profile import line, and the two Windows Defender
+`ExclusionPath` entries (`Remove-MpPreference`, ONLY the ART paths). On the
+emulation VM, the caldera systemd unit + service, `/opt/caldera`, the
+`/etc/emulation` state dir, the ufw 8888 rule (ufw-active hosts only), and
+the `caldera` service user.
+
+Kept on purpose: git itself (a system tool), every other Defender setting
+(realtime/ASR/PPL stay exactly as GOAD core configured them), and the
+emulation VM machine itself (destroy it through goad/the provider when you
+want the host gone). Caldera operation reports live in `/opt/caldera/data`
+- the playbook prints a reminder before removing it; copy the folder out
+first if you need the history.
 
 ## credits
 - Based on the structure of the `elastic-edr` extension (providers layout,

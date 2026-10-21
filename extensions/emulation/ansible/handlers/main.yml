@@ -1,0 +1,5 @@
+# handlers for the emulation uninstall playbook
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: yes

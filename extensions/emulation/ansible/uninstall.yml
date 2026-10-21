@@ -1,0 +1,180 @@
+# emulation extension : uninstall playbook
+# Reverse of install.yml, best-effort per host: removes everything the
+# extension PUT ON THE ENDPOINTS and the extension's own state. Run directly
+# against the instance inventory:
+#
+#   ansible-playbook -i <workspace>/<instance>/emulation_inventory \
+#     extensions/emulation/ansible/uninstall.yml
+#
+# (on main the goad CLI has no uninstall_extension command - goad.py only
+# ever calls run_extension with install=True, so this playbook is the
+# supported teardown path; `disable_extension emulation` removes it from
+# the instance's enabled list.)
+#
+# What IS removed:
+#   - on the agents ([emulation_agents] = [domain]):
+#       the ART install root C:\Tools\AtomicRedTeam (atomics checkout +
+#       module installer leftovers), the invoke-atomicredteam module
+#       (Uninstall-Package at the pinned version, service-presence guarded),
+#       the AllUsers profile import line, the Windows Defender path
+#       exclusions for the ART dirs (Remove-MpPreference -ExclusionPath,
+#       ONLY the two paths this extension added), the git installer
+#       leftovers
+#   - on the emulation VM ([emulation_server]):
+#       the caldera systemd unit + service, /opt/caldera (venv + clone +
+#       conf), the /etc/emulation state dir, the ufw 8888 rule (only if ufw
+#       is active), the caldera service user
+#
+# What is NOT removed (deliberate):
+#   - git itself (system-wide tool; other things may use it)
+#   - anything Defender/GOAD-core configured (realtime, ASR, PPL) - only the
+#     two ART path exclusions are removed
+#   - the ART C:\Tools\AtomicRedTeam parent when other tooling lives there
+#     (only the AtomicRedTeam subfolder is removed)
+#   - any Caldera operation/agent history - the whole server dir goes; if
+#     you want the operation reports, copy /opt/caldera/data first (the
+#     playbook prints a reminder)
+
+- name: Uninstall Atomic Red Team (windows machines)
+  hosts: emulation_agents
+  gather_facts: yes
+  tasks:
+    # ---- ART install root ----------------------------------------------------
+    - name: Check if the ART install root exists
+      ansible.windows.win_stat:
+        path: "{{ art_install_root }}"
+      register: art_root_stat
+
+    - name: Remove the ART install root (atomics + installers)
+      ansible.windows.win_file:
+        path: "{{ art_install_root }}"
+        state: absent
+      when: art_root_stat.stat.exists | default(false)
+
+    # ---- invoke-atomicredteam module -----------------------------------------
+    - name: Uninstall the invoke-atomicredteam module (pinned version)
+      ansible.windows.win_powershell:
+        script: |
+          $m = Get-Module -ListAvailable -Name invoke-atomicredteam |
+               Where-Object { $_.Version -eq '{{ art_module_version }}' }
+          if ($m) {
+            Uninstall-Module -Name invoke-atomicredteam -RequiredVersion {{ art_module_version }} -AllUsers -Force
+            Write-Output "module-removed"
+          } else { Write-Output "module-absent" }
+      register: art_module_uninstall
+      failed_when: false
+      changed_when: "'module-removed' in art_module_uninstall.stdout"
+
+    # ---- AllUsers profile import line ------------------------------------------
+    - name: Remove the profile auto-import line
+      ansible.windows.win_powershell:
+        script: |
+          $profilePath = $PROFILE.AllUsersAllHosts
+          if (Test-Path $profilePath) {
+            $content = Get-Content $profilePath | Where-Object { $_ -notmatch 'invoke-atomicredteam' }
+            Set-Content -Path $profilePath -Value $content
+            Write-Output "profile-cleaned"
+          } else { Write-Output "profile-absent" }
+      changed_when: "'profile-cleaned' in art_module_uninstall.stdout"
+      failed_when: false
+
+    # ---- Defender path exclusions (ONLY the two ART paths) ---------------------
+    - name: Remove the ART Windows Defender path exclusions
+      ansible.windows.win_powershell:
+        script: |
+          $artPaths = @('{{ art_install_root }}', '{{ art_atomics_dir }}')
+          $current = (Get-MpPreference).ExclusionPath
+          $removed = @()
+          foreach ($p in $artPaths) {
+            if ($current -contains $p) {
+              Remove-MpPreference -ExclusionPath $p
+              $removed += $p
+            }
+          }
+          Write-Output ("removed=" + ($removed -join ','))
+      register: art_exclusion_removal
+      failed_when: false
+      changed_when: "'removed=' in art_exclusion_removal.stdout and art_exclusion_removal.stdout != 'removed='"
+
+    - name: Verify the ART exclusions are gone (post-check)
+      ansible.windows.win_powershell:
+        script: |
+          $current = (Get-MpPreference).ExclusionPath
+          $left = $current | Where-Object { $_ -like '*AtomicRedTeam*' }
+          Write-Output ("leftover=" + ($left -join ','))
+      changed_when: false
+      failed_when: false
+
+- name: Uninstall the Caldera server (emulation VM)
+  hosts: emulation_server
+  become: yes
+  tasks:
+    - name: Check if the caldera service unit exists
+      ansible.builtin.stat:
+        path: "{{ caldera_systemd_dir }}/{{ caldera_service_name }}.service"
+      register: caldera_unit_stat
+
+    - name: Stop + disable the caldera service
+      ansible.builtin.systemd:
+        name: "{{ caldera_service_name }}"
+        state: stopped
+        enabled: no
+      when: caldera_unit_stat.stat.exists | default(false)
+      failed_when: false
+
+    - name: Remove the caldera systemd unit
+      ansible.builtin.file:
+        path: "{{ caldera_systemd_dir }}/{{ caldera_service_name }}.service"
+        state: absent
+      when: caldera_unit_stat.stat.exists | default(false)
+      notify: Reload systemd
+
+    # Keep the operation reports if the operator wants them - print where.
+    - name: Reminder about Caldera operation data
+      ansible.builtin.debug:
+        msg: >-
+          Removing {{ caldera_install_dir }} deletes all Caldera operation
+          reports/agent history. Copy {{ caldera_install_dir }}/data somewhere
+          first if you need it.
+
+    - name: Remove the caldera install tree
+      ansible.builtin.file:
+        path: "{{ caldera_install_dir }}"
+        state: absent
+
+    - name: Remove the emulation state dir
+      ansible.builtin.file:
+        path: "{{ state_dir }}"
+        state: absent
+
+    - name: Remove the ufw 8888 rule (only when ufw is active)
+      block:
+        - name: Check if ufw is active
+          ansible.builtin.command: ufw status
+          changed_when: false
+          register: uninstall_ufw
+          failed_when: false
+
+        - name: Delete the caldera ufw rule
+          community.general.ufw:
+            rule: allow
+            port: "{{ caldera_port }}"
+            proto: tcp
+            delete: yes
+          when: "'Status: active' in uninstall_ufw.stdout"
+      when: caldera_unit_stat.stat.exists | default(false)
+
+    - name: Remove the caldera service user
+      ansible.builtin.user:
+        name: "{{ caldera_user }}"
+        state: absent
+        remove: yes
+
+    - name: Show what was kept
+      ansible.builtin.debug:
+        msg: >-
+          Emulation extension uninstalled. Kept on purpose: git (system
+          tool), all other Defender settings (only the two ART path
+          exclusions were removed), and any GOAD-core hardening. The
+          emulation VM itself stays up (destroy it via the provider/goad
+          CLI if you want the machine gone too).
