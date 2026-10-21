@@ -810,6 +810,22 @@
 # Use Fleet's custom component-template hooks rather than a generic index template
 # that competes with integration-managed templates. Preserve any existing custom
 # settings/mappings/metadata when adding the lifecycle setting.
+#
+# #31 - zero replicas for FUTURE backing indices: PUT /_settings mutates only
+# indices existing at that moment, so new/rolled Fleet backing indices would
+# still inherit the integration templates' number_of_replicas: 1 and sit
+# unassigned (yellow) on this single node. The fix rides the SAME logs@custom /
+# metrics@custom component templates the ILM policy uses: settings composed
+# through a component template are inherited by every new backing index that
+# resolves through the Fleet integration index templates (ES 8.19 semantics,
+# fetched this session:
+# https://www.elastic.co/guide/en/elasticsearch/reference/8.19/index-templates.html -
+# "component templates are a building block ... a new index created from a
+# template inherits the settings, mappings and aliases from the index template
+# AND its component templates"; template-level settings win over component-
+# template settings, so a matching Fleet template that explicitly sets
+# number_of_replicas would take precedence - verify the effective value on the
+# live run via GET logs-*/_settings).
 - name: Fetch existing logs custom component template
   ansible.builtin.uri:
     url: "http://localhost:{{ es_http_port }}/_component_template/logs@custom"
@@ -847,7 +863,7 @@
     headers:
       Content-Type: "application/json"
     body_format: json
-    body: "{{ es_logs_custom_body | combine({'template': (es_logs_custom_body.get('template', {}) | combine({'settings': (es_logs_custom_body.get('template', {}).get('settings', {}) | combine({'index.lifecycle.name': 'goad-edr-logs'}, recursive=True))}, recursive=True))}, recursive=True) | to_json }}"
+    body: "{{ es_logs_custom_body | combine({'template': (es_logs_custom_body.get('template', {}) | combine({'settings': (es_logs_custom_body.get('template', {}).get('settings', {}) | combine({'index.lifecycle.name': 'goad-edr-logs', 'index.number_of_replicas': 0}, recursive=True))}, recursive=True))}, recursive=True) | to_json }}"
   register: es_logs_custom_put
   until: es_logs_custom_put.status == 200
   retries: 5
@@ -863,7 +879,7 @@
     headers:
       Content-Type: "application/json"
     body_format: json
-    body: "{{ es_metrics_custom_body | combine({'template': (es_metrics_custom_body.get('template', {}) | combine({'settings': (es_metrics_custom_body.get('template', {}).get('settings', {}) | combine({'index.lifecycle.name': 'goad-edr-logs'}, recursive=True))}, recursive=True))}, recursive=True) | to_json }}"
+    body: "{{ es_metrics_custom_body | combine({'template': (es_metrics_custom_body.get('template', {}) | combine({'settings': (es_metrics_custom_body.get('template', {}).get('settings', {}) | combine({'index.lifecycle.name': 'goad-edr-logs', 'index.number_of_replicas': 0}, recursive=True))}, recursive=True))}, recursive=True) | to_json }}"
   register: es_metrics_custom_put
   until: es_metrics_custom_put.status == 200
   retries: 5
@@ -872,7 +888,7 @@
 
 # Apply the policy to already-created data streams/backing indices as well;
 # component-template changes alone only affect future backing indices.
-- name: Apply ILM to existing logs and metrics data streams
+- name: Apply ILM and zero-replica settings to existing logs and metrics data streams
   ansible.builtin.uri:
     url: "http://localhost:{{ es_http_port }}/logs-*,metrics-*/_settings?allow_no_indices=true&ignore_unavailable=true&expand_wildcards=all"
     method: PUT
@@ -883,6 +899,7 @@
     body_format: json
     body:
       index.lifecycle.name: goad-edr-logs
+      index.number_of_replicas: 0
     status_code: [200, 404]
     return_content: yes
   register: es_ilm_existing_settings
