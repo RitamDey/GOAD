@@ -127,8 +127,52 @@
   failed_when: applocker_event_channels.rc is defined and applocker_event_channels.rc != 0
 
 
+# Issue #7 (PASS 2): apply ONLY on effective-policy drift, not every provision.
+#
+# NORMALIZATION CAVEAT (honest static posture): the hash compare is
+# serialization-sensitive - a cosmetic re-serialization between
+# Get-AppLockerPolicy -Effective -Xml output and the shipped file may report
+# drift and re-apply (idempotent by design; audit-only policy, nothing is
+# blocked). XML canonical normalization is deliberately NOT attempted in this
+# pass (high complexity, low lab value); effective-state comparison is left
+# to live-run validation. A retrieval failure exits non-zero and FAILS the
+# drift task explicitly - it can never silently force or skip an apply.
+#
+# First-run case: a fresh host's effective policy hash differs from the
+# shipped file (or effective retrieval yields the default allow-all), so
+# applocker_drift=1 and the apply runs. No-op re-run: hashes equal ->
+# drift=0 -> apply SKIPPED (the Set-AppLockerPolicy command does not run).
+# XML change: drift=1 -> apply runs once and the effective hash changes.
+- name: Compute effective-policy drift before applying (issue #7)
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    try {
+      function Get-EffectiveAppLockerHash {
+        $p = Get-AppLockerPolicy -Effective -Xml
+        if ([string]::IsNullOrWhiteSpace([string]$p)) { throw 'Effective AppLocker policy XML is empty.' }
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$p))).Replace('-','')
+      }
+      function Get-FilePolicyHash {
+        $p = Get-Content -LiteralPath "{{ applocker_install_location }}\{{ applocker_policy_file }}" -Raw
+        if ([string]::IsNullOrWhiteSpace([string]$p)) { throw 'Shipped policy XML is empty.' }
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$p))).Replace('-','')
+      }
+      $eff = Get-EffectiveAppLockerHash
+      $want = Get-FilePolicyHash
+      Write-Output ("applocker_drift={0}" -f [int]($eff -ne $want))
+    } catch {
+      Write-Error "AppLocker drift check failed: $($_.Exception.Message)"
+      exit 1
+    }
+  register: applocker_drift
+  changed_when: false
+  failed_when: applocker_drift.rc is defined and applocker_drift.rc != 0
+
 # Hash, apply, and hash again in one task so changed_when compares values
 # produced by this invocation rather than referencing a future task result.
+# Gated on the drift pre-check above: skipped entirely on a no-op re-run.
 - name: Apply the AppLocker audit-only policy and detect effective changes
   ansible.windows.win_shell: |
     $ErrorActionPreference = 'Stop'
@@ -150,6 +194,7 @@
   register: applocker_apply
   changed_when: (applocker_apply.stdout | default('')) is search('applocker_policy_changed=1')
   failed_when: applocker_apply.rc is defined and applocker_apply.rc != 0
+  when: (applocker_drift.stdout | default('')) is search('applocker_drift=1')
 
 - name: Verify the effective AppLocker collections are active in audit mode
   ansible.windows.win_shell: |
