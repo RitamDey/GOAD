@@ -106,6 +106,20 @@
       ({{ rules_status.json.rules_not_installed | default(0) }} remaining)
 
 # ---- 3. Event data flowing ---------------------------------------------------
+# Issue #3 (PASS 2): only a VALID HTTP 200 with an integer count consumes the
+# retry budget. Truth table (statically reasoned; ansible-core 2.18 semantics):
+#   | response            | failed_when | until | outcome                    |
+#   |---------------------|-------------|-------|----------------------------|
+#   | 200 count=0         | pass        | false | retry (budget spent)       |
+#   | 200 count=5         | pass        | true  | success                    |
+#   | 200 count missing/  | FAIL        | n/a   | prompt fail (malformed)    |
+#   | "abc" (not number)  |             |       |                            |
+#   | 401/403/4xx         | FAIL        | n/a   | prompt fail (auth/access)  |
+#   | 503                 | pass        | false | retry (cluster boot window)|
+#   | 500/other 5xx       | FAIL        | n/a   | prompt fail                |
+# The `number` Jinja test is verified available in ansible-core 2.18 (jinja 3.1).
+# NOTE: ansible parses JSON numbers as int/float; "is number" accepts both, so a
+# float-count JSON would also pass - an acceptable lab trade-off vs type_debug.
 - name: Wait for agent event data to land in Elasticsearch
   block:
     - name: Poll Elasticsearch until the first docs land in logs-*/metrics-*
@@ -117,29 +131,63 @@
         headers:
           Content-Type: "application/json"
         return_content: yes
-        status_code: 200
+        # Accept non-200s as module-success so EVERY outcome reaches the
+        # failed_when/until classification below instead of dying on the
+        # default [200] before the retry loop can decide anything.
+        status_code: [200, 401, 403, 404, 500, 503]
       register: es_data_count
-      failed_when: es_data_count.status is defined and es_data_count.status != 200
+      failed_when: >-
+        es_data_count.status not in [200, 503]
+        or (es_data_count.status == 200
+            and (es_data_count.json.count is not defined
+                 or es_data_count.json.count is not number))
       until: >-
         es_data_count.status == 200 and
-        es_data_count.json.count | default(0) | int > 0
+        es_data_count.json.count is defined and
+        es_data_count.json.count is number and
+        es_data_count.json.count | int > 0
       retries: "{{ health_assertions_data_retries }}"
       delay: 10
       timeout: 30
 
+    - name: Classify the ingestion probe outcome
+      ansible.builtin.set_fact:
+        es_probe_class: >-
+          {{ 'probe-error' if (es_data_count.status | int) != 200
+             else ('malformed-response'
+                   if (es_data_count.json.count is not defined
+                       or es_data_count.json.count is not number)
+                   else 'no-data-yet') }}
 
   rescue:
-    - name: Fail if no event data reached Elasticsearch (with diagnosis)
+    - name: Fail with a CLASSIFIED ingestion-probe diagnosis (probe error vs no data)
       ansible.builtin.fail:
         msg: >-
-          Elasticsearch's logs-*/metrics-* ingestion probe failed or returned
-          no data after {{ health_assertions_data_retries }} attempts.
-          HTTP status: {{ es_data_count.status | default('unavailable') }}.
-          Elasticsearch response: {{ es_data_count.json.error | default(es_data_count.msg | default('no response body')) }}.
-          If the HTTP status is 200 and count is zero, the Fleet Server agent is
-          online but data has not reached Elasticsearch; check the Fleet default
-          output ({{ es_output_url | default('http://' ~ hostvars[inventory_hostname].ansible_host ~ ':' ~ es_http_port) }})
-          and the agent logs at /opt/Elastic/elastic-agent.
+          {% if (es_probe_class | default('no-data-yet')) == 'no-data-yet' %}
+          NO-DATA-YET: Elasticsearch accepted every probe (HTTP 200) but
+          logs-*/metrics-* stayed at count=0 for
+          {{ health_assertions_data_retries }} attempts. The probe itself is
+          healthy - the Fleet Server agent is online but its data has not
+          reached Elasticsearch. Check the Fleet default output
+          ({{ es_output_url | default('http://' ~ hostvars[inventory_hostname].ansible_host ~ ':' ~ es_http_port) }})
+          and the agent logs at /opt/Elastic/elastic-agent
+          (or /opt/Elastic/Agent/data/elastic-agent-*/logs/).
+          {% elif (es_probe_class | default('')) == 'malformed-response' %}
+          MALFORMED-RESPONSE: the probe returned HTTP 200 but the body carried
+          no usable integer "count" field - this is an invalid probe response,
+          NOT a no-data condition. Elasticsearch version/upgrade issue
+          suspected. Full response body:
+          {{ es_data_count.json | default({}) | to_nice_json | truncate(600) }}
+          {% else %}
+          PROBE-ERROR: the ingestion probe itself FAILED (HTTP
+          {{ es_data_count.status | default('unavailable') }}) - this is NOT a
+          no-data condition. Response body:
+          {{ es_data_count.json | default(es_data_count.msg | default('no response body')) | to_nice_json | truncate(600) }}.
+          {% if es_data_count.status | default(0) in [401, 403] %}
+          Auth/index-access failure: check the elastic user password vs the
+          recovered effective password, and the ILM/index template permissions.
+          {% endif %}
+          {% endif %}
 
 # ---- 4. One-screen summary ----------------------------------------------------
 # C5 fix: report the STORED posture (what the last provision actually applied),
