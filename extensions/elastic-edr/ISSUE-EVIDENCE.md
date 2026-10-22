@@ -51,7 +51,7 @@ confirmation pending first home-lab run.
 
 ---
 
-## Issue #3 -- invalid `index_prefix` query DSL -- resolved by commit 29e19a5
+## Issue #3 -- invalid `index_prefix` query DSL -- [label half; SUPERSEDED by the canonical #3 block below for the PASS 2 retry-logic work] resolved by commit 29e19a5
 
 Evidence at HEAD 864267a: extensions/elastic-edr/ansible/roles/health_assertions/tasks/verify_stack.yml:113 --
 `url: "http://localhost:{{ es_http_port }}/logs-*,metrics-*/_count?allow_no_indices=true&ignore_unavailable=true&expand_wildcards=all"`,
@@ -71,7 +71,7 @@ Status: static verification only; live confirmation pending first home-lab run.
 
 ---
 
-## Issue #45 -- Tor label on port 1723 -- resolved by commit 5b4d4fe (label); section-comment residue fixed by C-10 of this run
+## Issue #45 -- Tor label on port 1723 -- [SUPERSEDED by the canonical #45 block below (commit 69547fe); kept for the review trail] label resolved by commit 5b4d4fe; section-comment residue fixed by C-10 of this run
 
 Evidence at HEAD 864267a: extensions/elastic-edr/ansible/roles/sysmon/files/sysmonconfig-export.xml:342-344 --
 `<DestinationPort name="PPTP" condition="is">1723</DestinationPort> <!--PPTP control-port heuristic; not proof of application protocol-->`
@@ -97,7 +97,7 @@ Post-fix status: fixed-static-only; live Sysmon event labeling pending first hom
 
 ---
 
-## Issue #38 -- Event ID 7 conjunction mislabeled as unsigned-DLL filter -- resolved by commit 5b4d4fe (branches + README); stale "disabled by default" comment residue fixed by C-10 of this run
+## Issue #38 -- Event ID 7 conjunction mislabeled -- [SUPERSEDED by the canonical #38 block below] branches resolved by commit 5b4d4fe (branches + README); stale "disabled by default" comment residue fixed by C-10 of this run
 
 Evidence at HEAD 864267a: extensions/elastic-edr/ansible/roles/sysmon/files/sysmonconfig-export.xml:412-430 --
 two explicit `<Rule>` groups inside `<ImageLoad onmatch="include">`:
@@ -148,8 +148,13 @@ Post-fix status: prep-only-live-run-pending.
 
 ## Issue #16 -- partially addressed (C-12 commit) - identity split, live confirmation pending
 
+[BOOKKEEPING NOTE (PASS 2): this early block duplicated the canonical #16 block
+below (commit 756da82) and carried a wrong count (~10). The CANONICAL count is
+9 write-sites switched. This block is superseded by the 756da82 block below --
+kept for the review trail only.]
+
 Docs outcome B (docs silent/ambiguous on kibana_system holding ALL Fleet feature
-privileges): the ~10 bootstrap/WRITE Fleet call sites now authenticate as the
+privileges): 9 bootstrap/WRITE Fleet call sites now authenticate as the
 `elastic` superuser; the 8 remaining READ-ONLY call sites (status wait, epm
 version GETs, package_policies listings, enrollment-token LISTs,
 fleet_server_hosts GET) stay on `kibana_system`. The split + rationale is
@@ -352,3 +357,112 @@ Post-fix status: fixed-static-only.
 - #4: no commit because the collision surface no longer exists at HEAD (grep
   evidence above); the review agent re-greps before closing.
 - #5 / #12: open by design until the home-lab run measures ingest.
+---
+
+## Plan deviation: C-13 static regression tests -- formally dropped
+
+The PASS 1 plan premise that `extensions/elastic-edr/tests/test_windows_telemetry_config.py`
+"already exists" was stale: the file was created in c40aeee and DELIBERATELY DELETED
+upstream in 8883f61 ("Remove the standalone unittest file added in the previous change.
+This repository does not use that proposed test harness."). The user then ruled
+explicitly: "No test harnesses are used in the GOAD project. You are to not build any
+unittests."
+
+Therefore: C-13's static regression tests were NOT built and are FORMALLY DROPPED.
+The #36 invariant (every until-with-400/409 uri task carries a matching status_code)
+is guarded instead by the per-task failed_when blocks landed with commit 6d8fd16 and
+is re-checkable by hand: grep status_code in elastic_stack/tasks/main.yml (15 lines)
+against the 7 until-predicates. No tests will follow unless the project changes its
+no-test-harness convention.
+
+---
+
+# PASS 2 evidence blocks (2026-10-22 re-opened issues)
+
+## Issue #3 -- fixed-static-only (commit 35bb237, PASS 2 P-1)
+
+Evidence at HEAD: extensions/elastic-edr/ansible/roles/health_assertions/tasks/
+verify_stack.yml ingest poll block -- status_code widened to
+[200,401,403,404,500,503]; failed_when fails promptly on any non-[200,503] AND on a
+200 whose body has no usable integer count; until succeeds ONLY on
+200 + count is number + count|int > 0 (a valid zero-count 200 falls through
+failed_when without satisfying until = the ONLY retry case, plus 503 boot-window
+retries); es_probe_class fact (probe-error | malformed-response | no-data-yet) drives
+a 3-way rescue message that separates the outcomes. default(0) removed from the
+until/failed_when chain (remaining default(0)s in the file are unrelated rules_status
+debug lines).
+Verification: the 7-case truth table (200/0 retry, 200/5 success, 200-malformed fail,
+401 fail, 503 retry, 500 fail, 200-"abc" fail) EXECUTED against real ansible-core 2.18
+debug-task renderings of the exact expressions -- ALL OK (recorded in the commit body).
+`is number` confirmed available in the pinned toolchain (ansible-core 2.18/jinja 3.1.6;
+the plan's type_debug fallback not needed).
+Fresh-source check: docs.ansible.com playbook_guide/playbooks_loops.html (until
+semantics) + live expression execution above.
+Post-fix status: fixed-static-only (live ES cases explicitly deferred by the issue).
+
+## Issue #33 -- fixed-static-only (commit 4e97e55, PASS 2 P-2)
+
+Evidence at HEAD: elastic_stack/tasks/main.yml -- the service token is persisted to
+{{ state_dir }}/fleet-service-token (mode 0600, root:root, no_log'd copy) and the
+install command now passes --fleet-server-service-token-path=<file>; the value form
+--fleet-server-service-token= is GONE from argv (grep clean). Sanitized stat/debug
+diagnostic pair prints exists/mode/uid, never the value. no_log remains on the install
+task (the enrollment token stays in argv by design: no -path equivalent exists for
+--enrollment-token in the 8.19 CLI option list, and the Windows MSI documents
+INSTALLARGS="--url=... --enrollment-token=..." with no token-path alternative --
+both verified this session). README "Token revocation and rotation" subsection added:
+DELETE /_security/service/elastic/fleet-server/credential/token/<name> (per the 8.19
+Delete service account tokens API page), enrollment-key revocation via Fleet UI /
+DELETE /api/fleet/enrollment_api_keys/<id>, when-to-rotate.
+Fresh-source check: elastic-agent-cmd-options.html (--fleet-server-service-token-path
+"Mutually exclusive with --fleet-server-service-token"); install-agent-msi page (no
+token-path alternative); security-api-delete-service-token.html (DELETE path shape).
+Post-fix status: fixed-static-only (verbose-log/token-file live confirmation pending).
+
+## Issue #7 -- fixed-static-only (commit 1d823be, PASS 2 P-3)
+
+Evidence at HEAD: applocker/tasks/main.yml -- NEW "Compute effective-policy drift
+before applying (issue #7)" read-only task (hashes effective vs shipped policy,
+applocker_drift=0|1, explicit non-zero exit on retrieval failure); the apply task is
+now when:-gated on applocker_drift=1 -- Set-AppLockerPolicy runs ONLY on genuine
+drift (grep confirms the call lives only inside the gated task). The single-task
+before/apply/after changed_when pattern from 864267a is preserved for the apply path.
+Serialization-sensitivity caveat documented above the drift task (cosmetic
+re-serialization may re-apply; idempotent, audit-only).
+Fresh-source check: none needed (structure-only change; hash helpers reused from the
+existing task).
+Post-fix status: fixed-static-only (first-run/no-op/drift transcripts = live-run
+evidence criterion, pending home lab).
+
+## Issue #31 -- prep-only-live-run-pending (commit d0bbdc6, PASS 2 P-4)
+
+Evidence at HEAD: elastic_stack/tasks/main.yml -- NEW "Report the effective resolved
+template settings for logs-* (issue #31)": POST
+/_index_template/_simulate_index/logs-windows.sysmon_operational-2026.01.01 resolves
+the full composable chain (index + component templates, precedence applied) and the
+debug task prints the effective index.number_of_replicas / index.lifecycle.name
+(NOT-RESOLVED fallback) flagged "verify on live run: must read 0 / goad-edr-logs",
+plus a 404 warn task (integration templates not yet created). Representative data-stream
+name taken from THIS lab's windows integration config (windows.sysmon_operational),
+not guessed. Component-template comment block + README checklist row #31 updated to
+name the simulation task and the escalation path.
+Fresh-source check: elasticsearch 8.19 simulate-index API page
+(operation-indices-simulate-index-template: endpoint + response
+template.settings.index.number_of_replicas). All fetched this session.
+Post-fix status: prep-only-live-run-pending (the task SHIPS the proof mechanism;
+the value confirmation is live-gated per the verifier's criterion 1).
+
+## PASS 2 standing residue (honest)
+
+- Zero live runs: all four PASS 2 fixes are static verification only. The README
+  "Live-run validation checklist" remains the runbook; rows #3-classified-probe,
+  #7-drift-transcripts, #31-simulation-readout, #33-argv-free-install now map to
+  the four new commits.
+- #33: the Windows MSI enrollment-token argv exposure REMAINS BY DESIGN (no
+  token-path alternative exists in the MSI mechanism -- verified); suppression is
+  via no_log only.
+- #31: the simulation task proves the MECHANISM; the effective value (0 vs
+  integration-template's 1) is the live-gated half.
+- #7: hash-compare serialization sensitivity may cause benign re-applies;
+  documented, deferred.
+- #3: live ES cases explicitly deferred by the issue itself.
