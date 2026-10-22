@@ -907,8 +907,11 @@
 # template inherits the settings, mappings and aliases from the index template
 # AND its component templates"; template-level settings win over component-
 # template settings, so a matching Fleet template that explicitly sets
-# number_of_replicas would take precedence - verify the effective value on the
-# live run via GET logs-*/_settings).
+# number_of_replicas would take precedence - the "Report the effective
+# resolved template settings" task below prints the RESOLVED effective
+# settings via _index_template/_simulate_index; if the integration template's
+# own number_of_replicas wins, escalate per the README runbook
+# (dedicated low-priority composable template)).
 - name: Fetch existing logs custom component template
   ansible.builtin.uri:
     url: "http://localhost:{{ es_http_port }}/_component_template/logs@custom"
@@ -988,6 +991,64 @@
   register: es_ilm_existing_settings
   failed_when: es_ilm_existing_settings.status not in [200, 404]
   changed_when: false
+
+# Issue #31 (PASS 2, static half): the component-template hooks above set the
+# INTENT; this task produces the PROOF. POST /_index_template/_simulate_index/
+# {name} resolves the FULL composable chain (index templates + component
+# templates, precedence applied) exactly as a NEW backing index would inherit
+# it - endpoint + response verified against the 8.19 docs this session
+# (https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-indices-simulate-index-template:
+# POST /_index_template/_simulate_index/{name}; response template.settings
+# carries the resolved settings, e.g. "index": {"number_of_replicas": "0"}).
+# The simulated index name does NOT need to exist; the windows integration's
+# winlog stream backs the logs-windows.sysmon_operational data stream, so
+# logs-windows.sysmon_operational-2026.01.01 is a representative Fleet backing
+# index name for this lab. The debug task below prints the effective values;
+# on the live run they must read 0 / goad-edr-logs - if number_of_replicas
+# resolves to 1 instead, the integration template's own setting wins and the
+# README escalation applies (dedicated low-priority composable template).
+- name: Report the effective resolved template settings for logs-* (issue #31)
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/_index_template/_simulate_index/logs-windows.sysmon_operational-2026.01.01"
+    method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    return_content: yes
+    status_code: [200, 404]
+  register: es_template_sim
+  until: es_template_sim.status in [200, 404]
+  retries: 3
+  delay: 5
+  failed_when: false
+  changed_when: false
+
+- name: "Show the effective resolved template settings (verify on live run: must read 0 / goad-edr-logs)"
+  ansible.builtin.debug:
+    msg: >-
+      Effective template for a new logs-* backing index
+      (logs-windows.sysmon_operational-2026.01.01 simulation,
+      HTTP {{ es_template_sim.status | default('?') }}):
+      index.number_of_replicas={{
+        es_template_sim.json.template.settings['index']['number_of_replicas']
+        | default('NOT-RESOLVED') }},
+      index.lifecycle.name={{
+        es_template_sim.json.template.settings['index.lifecycle.name']
+        | default(es_template_sim.json.template.settings['index']['lifecycle']['name']
+        | default('NOT-RESOLVED')) }}.
+      Expected: 0 / goad-edr-logs (issue #31). If number_of_replicas resolves
+      to 1, the integration template's own setting wins - apply the README
+      escalation (dedicated low-priority composable template).
+  when: es_template_sim.status | default(0) == 200
+
+- name: Warn when the template simulation could not resolve (issue #31)
+  ansible.builtin.debug:
+    msg: >-
+      The _simulate_index probe returned HTTP {{ es_template_sim.status | default('?') }}
+      (expected 200 once the Fleet integration templates exist; 404 before the
+      windows integration package-policy is created). The effective replica
+      setting could not be resolved this run - re-run the stack play after the
+      integration install, or check GET _index_template on the live cluster.
+  when: es_template_sim.status | default(0) == 404
 
 # Flip the Defend engine to DETECT-ONLY mode. The EDRComplete preset defaults the
 # protections to PREVENT, which would block test payloads (EICAR / ransomware
