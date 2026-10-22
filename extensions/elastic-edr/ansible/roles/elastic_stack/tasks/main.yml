@@ -437,6 +437,39 @@
     fleet_server_service_token: "{{ fs_service_token.json.token.value }}"
   no_log: true
 
+# Issue #33 (PASS 2): the service token must NOT sit in argv (ps/logs exposure
+# window). 8.19 supports --fleet-server-service-token-path <string> - "Service
+# token file to use for communication with Elasticsearch. Mutually exclusive
+# with --fleet-server-service-token." (8.19 command reference,
+# https://www.elastic.co/guide/en/fleet/8.19/elastic-agent-cmd-options.html,
+# fetched this session). Persist it root-only and pass the PATH instead; the
+# value form is dropped from the install command below.
+- name: Persist the Fleet Server service token to a root-only file
+  ansible.builtin.copy:
+    content: "{{ fleet_server_service_token }}"
+    dest: "{{ state_dir }}/fleet-service-token"
+    mode: "0600"
+    owner: root
+    group: root
+  no_log: true   # content IS the token; copy module output would echo it
+
+# Sanitized diagnostic (issue #33 fix-plan item 2): shows the token file's
+# existence/permissions - never the token itself.
+- name: Stat the Fleet Server service token file (sanitized diagnostic)
+  ansible.builtin.stat:
+    path: "{{ state_dir }}/fleet-service-token"
+  register: fs_token_file_stat
+  changed_when: false
+
+- name: Report the Fleet Server service token file state (sanitized)
+  ansible.builtin.debug:
+    msg: >-
+      Fleet Server service token file: {{ state_dir }}/fleet-service-token
+      exists={{ fs_token_file_stat.stat.exists | default(false) }}
+      mode={{ fs_token_file_stat.stat.mode | default('n/a') }}
+      uid={{ fs_token_file_stat.stat.uid | default('n/a') }}
+      (token value never printed - #33)
+
 - name: List existing enrollment tokens
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/enrollment_api_keys"
@@ -517,7 +550,7 @@
     --insecure
     --enrollment-token={{ fs_enrollment_token }}
     --fleet-server-es=http://127.0.0.1:{{ es_http_port }}
-    --fleet-server-service-token={{ fleet_server_service_token }}
+    --fleet-server-service-token-path={{ state_dir }}/fleet-service-token
     --fleet-server-policy={{ fleet_server_policy_id }}
     --fleet-server-host=0.0.0.0
     --fleet-server-port={{ fleet_server_port }}
@@ -537,8 +570,16 @@
   # mandatory for this self-enrollment. Whether the previous
   # --url=http://localhost:5601 (Kibana) form also works live is UNPROVEN;
   # both forms are recorded in ISSUE-EVIDENCE.md for the live run to settle.
-  # Command line carries --fleet-server-service-token / --enrollment-token
-  # (visible in ps + logs on the host otherwise) - #33.
+  # Secret handling (#33): the service token reaches the CLI via
+  # --fleet-server-service-token-path (root-only file) - the value form is
+  # mutually exclusive with it per the same docs page. The enrollment token
+  # REMAINS in argv by design: the 8.19 CLI offers no token-path equivalent
+  # for --enrollment-token (full option list checked this session), and the
+  # MSI INSTALLARGS path on Windows has no alternative either (the MSI docs
+  # document INSTALLARGS="--url=... --enrollment-token=..." as the only
+  # enrollment mechanism; https://www.elastic.co/docs/reference/fleet/install-agent-msi,
+  # fetched this session - "token-path" appears nowhere on that page).
+  # no_log stays: argv still carries the enrollment token.
   no_log: true
   when: not fs_agent_installed.stat.exists
   failed_when: fs_install.rc != 0

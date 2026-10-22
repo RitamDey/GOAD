@@ -404,6 +404,30 @@ stock-credential convention). Override via instance vars if needed -
 Kibana / Fleet : http://{{ip_range}}.53:5601
 Elasticsearch  : http://{{ip_range}}.53:9200
 
+### Token revocation and rotation
+
+Tokens live in root-only files on the ELASTIC-EDR VM (`/etc/elastic-edr/`).
+If you retained verbose provision logs, or after a suspected leak / at
+post-hunt teardown, rotate:
+
+- **Fleet Server service token** - revoke on Elasticsearch (needs
+  `manage_service_account`):
+  `DELETE /_security/service/elastic/fleet-server/credential/token/goad-fleet-server`
+  (path per the 8.19 Delete service account tokens API,
+  https://www.elastic.co/guide/en/elasticsearch/reference/8.19/security-api-delete-service-token.html),
+  then remove `/etc/elastic-edr/fleet-service-token` and re-provision - the
+  install creates a fresh token, persists it to the root-only file, and hands
+  the fleet-server agent the file path (never argv).
+- **Enrollment API keys** - Fleet UI (Management -> Fleet -> Enrollment
+  tokens -> revoke) or
+  `DELETE /api/fleet/enrollment_api_keys/<agent_api_key_id>`; then re-run the
+  install to mint fresh ones. Windows agents receive their enrollment token
+  via the MSI `INSTALLARGS` (the MSI docs offer no token-path alternative);
+  it stays out of run output (`no_log`).
+- **When:** post-hunt teardown, suspected leak, or if a former lab member
+  should no longer be able to enroll agents (enrollment tokens) / read the
+  stack (service token).
+
 ## Data retention (ILM)
 
 The lab ingests several GB/day (Sysmon 10/17/18/23/7/9 + full winlog +
