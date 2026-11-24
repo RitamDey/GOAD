@@ -142,6 +142,20 @@
   changed_when: false
   register: art_head_before
 
+# A SHA bump points art_repo_sha at a commit that is newer than the existing
+# clone, so fetch before the checkout - otherwise `git checkout <new sha>`
+# fails on a stale clone with "reference is not a tree".
+- name: Fetch origin before moving to a new pin
+  ansible.windows.win_command:
+    argv:
+      - "{{ art_git_exe }}"
+      - -C
+      - "{{ art_atomics_dir }}"
+      - fetch
+      - --quiet
+      - origin
+  when: art_head_before.stdout | trim != art_repo_sha
+
 - name: Checkout the pinned commit SHA
   ansible.windows.win_command:
     argv:
