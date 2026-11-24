@@ -69,6 +69,14 @@ caldera_plugins:
   - stockpile
   - training
 
+# Fetch the emu plugin's non-redistributable payloads (AdFind, PsExec, putty,
+# mimikatz, ...) via plugins/emu/download_payloads.sh after the server is up.
+# Several CTID plans (notably Turla) reference them. It is best-effort: the
+# script pulls from third-party sites WITHOUT version pins or checksums, some
+# of which are frequently offline, so a failed download never fails the play.
+# Set to false for an air-gapped lab, or to skip pulling offensive binaries.
+caldera_fetch_emu_payloads: true
+
 # conf/local.yml = the release's own conf/default.yml + these overrides.
 # Caldera 5.3.0 reads ONLY conf/local.yml when started with `-E local`
 # (server.py: apply_config('main', strip_yml(conf/<env>.yml)), no merge with
@@ -89,6 +97,15 @@ caldera_config_overrides:
   host: 0.0.0.0
   app.contact.http: "http://0.0.0.0:{{ caldera_port }}"
   plugins: "{{ caldera_plugins }}"
+  # Keep operation reports and exfil inside the install tree. The stock
+  # default.yml points these at /tmp (reports_dir: /tmp, exfil_dir:
+  # /tmp/caldera); the systemd unit sets PrivateTmp=yes, so a /tmp path is a
+  # per-service private tmp that is wiped on every restart - the reports
+  # written by teardown (app_svc.py _write_reports) would be lost. data/ is
+  # the dir the README/uninstall already treat as the operation-history
+  # location, and it is owned by the caldera user.
+  reports_dir: "{{ caldera_install_dir }}/data"
+  exfil_dir: "{{ caldera_install_dir }}/data/exfil"
 
 # Node.js for the one-time build of the magma (Vue) UI. Caldera 5.3.0 cannot
 # start without plugins/magma/dist (app/api/rest_api.py add_static on

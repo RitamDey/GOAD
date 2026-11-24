@@ -24,6 +24,8 @@
       - python3.10-dev    # pyminizip 0.2.6 is sdist-only on PyPI: C build
       - gcc               # (it bundles its own zlib 1.2.11 sources)
       - xz-utils          # unpack the Node.js .tar.xz
+      - curl              # emu download_payloads.sh
+      - unzip             # emu download_payloads.sh (AdFind.zip, PSTools.zip, ...)
     state: present
     update_cache: yes
     cache_valid_time: 3600
@@ -63,7 +65,25 @@
     path: "{{ caldera_install_dir }}/server.py"
   register: caldera_checkout
 
-- name: Clone Caldera at the pinned tag
+- name: Read the current checkout HEAD
+  ansible.builtin.command: git rev-parse HEAD
+  args:
+    chdir: "{{ caldera_install_dir }}"
+  changed_when: false
+  failed_when: false
+  register: caldera_existing_head
+  when: caldera_checkout.stat.exists
+
+# A sync is needed on first install, and when caldera_version was bumped (the
+# existing HEAD no longer matches the pinned commit). On a normal re-run HEAD
+# already matches, so the git task is skipped and the role stays idempotent -
+# the git module with force+recursive always reports "changed", so it must
+# not run on every play.
+- name: Decide whether the checkout needs a (re)sync
+  ansible.builtin.set_fact:
+    caldera_needs_sync: "{{ (not caldera_checkout.stat.exists) or (caldera_existing_head.stdout | default('') | trim != caldera_commit_sha) }}"
+
+- name: Clone / move Caldera to the pinned tag
   ansible.builtin.git:
     repo: "{{ caldera_repo_url }}"
     dest: "{{ caldera_install_dir }}"
@@ -72,7 +92,7 @@
     force: yes
   become_user: "{{ caldera_user }}"
   register: caldera_clone
-  when: not caldera_checkout.stat.exists
+  when: caldera_needs_sync | bool
 
 # The tag pin alone is not a tamper-proof pin (tags can be force-moved) -
 # assert the checked-out commit AND every pinned submodule SHA. A mismatch
@@ -221,17 +241,36 @@
           ---- journalctl (last 40 lines) ----
           {{ caldera_logs.stdout | default('unavailable') }}
 
+# ---- emu non-redistributable payloads (best-effort, after the server is up) ------
+# plugins/emu/download_payloads.sh pulls AdFind / PsExec / putty / mimikatz /
+# ... that the plugin cannot ship (licensing). It runs here AFTER the health
+# check so the emu plugin has already cloned data/adversary-emulation-plans
+# (the script copies some payloads into the Turla plan dir). Best-effort:
+# the script has no `set -e` and the sites are unpinned and often down, so
+# a failed download must not fail the install. A sentinel file makes it
+# run once; delete it (or bump nothing) to re-pull.
+- name: Fetch the emu non-redistributable payloads (best-effort)
+  ansible.builtin.shell:
+    cmd: |
+      bash download_payloads.sh > payloads-download.log 2>&1 || true
+      touch .goad-emu-payloads-done
+    chdir: "{{ caldera_install_dir }}/plugins/emu"
+    creates: "{{ caldera_install_dir }}/plugins/emu/.goad-emu-payloads-done"
+  become_user: "{{ caldera_user }}"
+  when: caldera_fetch_emu_payloads | bool
+
 # ---- Pin records + access info ---------------------------------------------------
 - name: Persist the install pins (version / SHAs) in the state dir
   ansible.builtin.copy:
     dest: "{{ state_dir }}/caldera-pins"
+    # deterministic content: no install timestamp, or the task reports
+    # "changed" on every re-run. The pins change only on a real version bump.
     content: |
       caldera_tag={{ caldera_version }}
       caldera_commit={{ caldera_commit_sha }}
       {% for name, sha in caldera_submodule_shas | dict2items %}
       {{ name }}={{ sha }}
       {% endfor %}
-      installed_at={{ ansible_date_time.iso8601 }}
     owner: root
     group: root
     mode: "0644"
