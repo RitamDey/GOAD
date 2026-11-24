@@ -14,12 +14,14 @@
   (pinned `invoke-atomicredteam` + the atomics repo at a pinned commit into
   `C:\Tools\AtomicRedTeam\atomics`; the AllUsers profile points
   `Invoke-AtomicTest` at its `atomics` subfolder), with **Windows Defender
-  path exclusions** scoped to the ART directories only
+  path exclusions** scoped to the ART and sandcat directories only
+- A live **Sandcat agent** on every domain windows machine (boot scheduled
+  task, started at install) that checks in to the Caldera server
 
 The first Caldera start clones the emu and atomic content repositories, so
 the UI can take a few minutes to come up (the install waits up to 10 min).
-The emu plugin's non-redistributable payloads are not downloaded (see the
-extension README).
+The emu plugin's non-redistributable payloads are fetched best-effort after
+the server is up (`caldera_fetch_emu_payloads`, see the extension README).
 
 This extension is STANDALONE - it does not couple to `elastic-edr` (no
 Fleet/Defend API integration, no exception lists) and coexists with
@@ -34,11 +36,12 @@ is the test data**, not an alert flood to fix.
 | 8888 | Caldera UI | your browser -> emulation VM |
 | 8888 | Caldera http contact (Sandcat C2 callback) | windows hosts -> emulation VM |
 
-The UI and the agent callback share one port (Caldera default). Sandcat is
-deployed manually from the Caldera UI (v1) and checks back into the SAME
-port - if an agent never checks in, verify 8888 is open from the windows
-hosts toward the emulation VM (ufw is opened by the install; provider-level
-ACLs - ludus, aws SG, azure NSG, proxmox firewall - are yours to allow).
+The UI and the agent callback share one port (Caldera default). The Sandcat
+agent is deployed automatically on every windows host and checks back into
+this SAME port - if an agent never checks in, verify 8888 is open from the
+windows hosts toward the emulation VM (ufw is opened by the install;
+provider-level ACLs - ludus, aws SG, azure NSG, proxmox firewall - are yours
+to allow).
 
 ## Version pins
 
@@ -56,9 +59,11 @@ no releases/tags - upgrades are SHA bumps, documented in the README).
   UI + Sandcat contact on `http://{{ip_range}}.54:8888`
 - domain windows machines: `C:\Tools\AtomicRedTeam\atomics` (pinned commit),
   the `invoke-atomicredteam` module auto-imported from the AllUsers profile,
-  Defender `ExclusionPath` entries for the ART directories (path-scoped, NOT
-  an AV disable - realtime protection stays as GOAD core configured it:
-  on for DC01-03/SRV03, off for SRV02)
+  a Sandcat agent in `C:\Tools\Sandcat` running as the `GOAD-Sandcat` boot
+  scheduled task (checks in to the Caldera server as a `red`-group agent),
+  and Defender `ExclusionPath` entries for the ART and sandcat directories
+  (path-scoped, NOT an AV disable - realtime protection stays as GOAD core
+  configured it: on for DC01-03/SRV03, off for SRV02)
 
 ## ART on the domain controllers - deliberate
 
@@ -69,13 +74,20 @@ interesting techniques. The exclusions added are path-scoped
 (`Add-MpPreference -ExclusionPath`) to the ART install/atomics directories
 only - nothing else about Defender's posture changes.
 
-## Sandcat deploy (manual, v1)
+## Sandcat agent (deployed automatically)
+
+The extension deploys the `sandcat.go-windows` agent on every domain windows
+host (downloaded from the Caldera server, run as the `GOAD-Sandcat` SYSTEM
+boot scheduled task, started during provisioning), so agents are already
+checked in when the install finishes. To drive one:
 
 1. Browse to `http://{{ip_range}}.54:8888`, log in red/changeme
-2. Plugins -> Sandcat -> deploy the `sandcat.go-windows` payload with the
-   http contact `http://{{ip_range}}.54:8888` on a host
-3. The agent appears in the Agents view; from there run an adversary from
-   the Adversary tab (emu profiles) against it
+2. Agents view - the hosts appear as `red`-group agents (paw = hostname)
+3. Run an adversary from the Adversary tab (emu profiles) against them
+
+The install's sandcat health check reports how many hosts have checked in
+and names any that have not (usually a firewall on 8888, or a slow first
+beacon - re-run `install_extension emulation`).
 
 ## Install / uninstall
 ```
@@ -93,9 +105,10 @@ ansible-playbook \
   -i ../../../globalsettings.ini \
   uninstall.yml
 ```
-It removes the ART dirs + module + profile lines + the two ART Defender
-exclusions on the agents, and the caldera service + `/opt/caldera` + the
-Node.js build toolchain + `/etc/emulation` + the ufw rule on the emulation
-VM. Kept on purpose: git, powershell-yaml, every other Defender setting, the
-VM itself. Caldera operation reports (`/opt/caldera/data`) are printed as a
+It removes, on the agents: the ART dirs + module + profile lines, the Sandcat
+agent (`GOAD-Sandcat` scheduled task, the running process and `C:\Tools\Sandcat`),
+and the ART + sandcat Defender exclusions; and on the emulation VM: the caldera
+service + `/opt/caldera` + the Node.js build toolchain + `/etc/emulation` + the
+ufw rule. Kept on purpose: git, powershell-yaml, every other Defender setting,
+the VM itself. Caldera operation reports (`/opt/caldera/data`) are printed as a
 copy-me reminder before deletion.
