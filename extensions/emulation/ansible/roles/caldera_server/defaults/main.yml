@@ -20,6 +20,31 @@ caldera_submodule_shas:
   plugins/sandcat: "0a35cd525f1cfabfcf602282428055c41f144513"   # sandcat agent (2.9.0-0723cab)
   plugins/atomic: "b90958810ffae1d328124f9e8af75f524616b27f"    # ART technique ingestion plugin
 
+# Caldera's emu and atomic plugins clone their CONTENT repos (not code - the
+# adversary-emulation plans and the atomic-red-team atomics) from master on
+# first start if plugins/<p>/data/<repo> is empty (plugins/emu/app/emu_svc.py,
+# plugins/atomic/app/atomic_svc.py). To keep the whole lab reproducible, this
+# role pre-clones both at a fixed SHA into those data dirs before the first
+# start, so the plugins find a populated dir and skip their own (unpinned)
+# clone. Bumping a pin means removing the data dir and re-running.
+caldera_emu_content_url: "https://github.com/center-for-threat-informed-defense/adversary_emulation_library"
+caldera_emu_content_sha: "4467a6eed6e67d25009704130e1d27d1a8007f57"   # master, 2025-05-28
+caldera_emu_content_dir: "{{ caldera_install_dir }}/plugins/emu/data/adversary-emulation-plans"
+# atomic-red-team: same repo + SHA as the windows ART atomics pin, kept in
+# lockstep (atomic_redteam/defaults art_repo_sha).
+caldera_atomic_content_url: "https://github.com/redcanaryco/atomic-red-team.git"
+caldera_atomic_content_sha: "388942adbd9641f4dfdcf079d7efe9a75ec0ac43"  # 2026-09-05
+caldera_atomic_content_dir: "{{ caldera_install_dir }}/plugins/atomic/data/atomic-red-team"
+caldera_content_repos:
+  - name: emu (adversary-emulation-plans)
+    url: "{{ caldera_emu_content_url }}"
+    sha: "{{ caldera_emu_content_sha }}"
+    dir: "{{ caldera_emu_content_dir }}"
+  - name: atomic (atomic-red-team)
+    url: "{{ caldera_atomic_content_url }}"
+    sha: "{{ caldera_atomic_content_sha }}"
+    dir: "{{ caldera_atomic_content_dir }}"
+
 # Caldera 5.3.0 supports python 3.9+ (verified: README + requirements python
 # check in conf/default.yml). ubuntu-22.04 ships python3.10 - no PPA needed.
 caldera_python_bin: python3.10
@@ -95,7 +120,11 @@ caldera_config_overrides:
   crypt_salt: "{{ caldera_crypt_salt }}"
   encryption_key: "{{ caldera_encryption_key }}"
   host: 0.0.0.0
-  app.contact.http: "http://0.0.0.0:{{ caldera_port }}"
+  # The advertised agent-callback URL. host/port above still bind 0.0.0.0, but
+  # app.contact.http is the URL the UI's deploy commands bake in, so it must be
+  # the VM's reachable address (ansible_host = the lab .54 IP), not 0.0.0.0.
+  # The auto-deployed agents are told -server explicitly and do not rely on it.
+  app.contact.http: "http://{{ ansible_host }}:{{ caldera_port }}"
   plugins: "{{ caldera_plugins }}"
   # Keep operation reports and exfil inside the install tree. The stock
   # default.yml points these at /tmp (reports_dir: /tmp, exfil_dir:
