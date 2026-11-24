@@ -1,24 +1,26 @@
 # emulation extension : Atomic Red Team framework deploy (windows domain hosts)
 #
-# Flow: git (sha256-verified installer) -> PSGallery module at the PINNED
-# version (Install-Module -RequiredVersion, never "latest") -> atomics repo
-# cloned at the PINNED commit SHA (the repo has no tags/releases - see the
-# defaults header for the SHA-bump upgrade policy) -> Defender path
-# exclusions for the ART dirs ONLY -> AllUsers profile auto-import ->
-# per-host verification (module importable + atomics populated + exclusion
-# present).
+# Flow: git (sha256-verified installer) -> Defender path exclusions for the
+# ART dirs ONLY -> PSGallery modules at PINNED versions (win_psmodule
+# required_version) -> atomics repo cloned at the PINNED commit SHA (the repo
+# has no tags/releases - see the defaults header for the SHA-bump upgrade
+# policy) -> AllUsers profile (auto-import + atomics path) -> per-host
+# verification in health_assertions (module importable + atomics populated +
+# exclusion present).
 #
 # Defender posture note: the exclusions are Add-MpPreference -ExclusionPath
 # entries scoped to the ART directories. Realtime protection, ASR, and every
 # other Defender setting GOAD core configured are left untouched. On SRV02
 # (core ships realtime-off) the exclusions are harmless no-ops.
+#
+# git is always called through art_git_exe (full path): a new WinRM shell is
+# not guaranteed to see the PATH entry the git installer adds.
 
 # ---- Transport: git for windows (sha256-verified) -----------------------------
-- name: Check if git is already available
-  ansible.windows.win_command: git --version
-  register: art_git_check
-  failed_when: false
-  changed_when: false
+- name: Check if git is already installed
+  ansible.windows.win_stat:
+    path: "{{ art_git_exe }}"
+  register: art_git_stat
 
 - name: Install git for windows (pinned installer, sha256-verified)
   block:
@@ -37,40 +39,39 @@
     - name: Install git silently
       ansible.windows.win_package:
         path: "{{ art_git_installer_path }}"
-        product_id: "{D8A5D2A5-9F5B-4E4A-9F5B-4E4A9F5B4E4A}"
+        product_id: "{{ art_git_product_id }}"
         arguments: /VERYSILENT /NORESTART /NOCANCEL /SP- /LOG="{{ art_install_root }}\\git-install.log"
         state: present
       register: art_git_install
 
-    - name: Refresh the PATH for the current session (git in machine path)
-      ansible.windows.win_shell: |
-        $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-        $env:Path = "$machinePath;$env:Path"
-        git --version
+    - name: Check that git runs from its install path
+      ansible.windows.win_command:
+        argv:
+          - "{{ art_git_exe }}"
+          - --version
       changed_when: false
       register: art_git_version
-      until: art_git_version.stdout is search('git version')
-      retries: 3
-      delay: 5
 
     - name: Clean up the git installer
       ansible.windows.win_file:
         path: "{{ art_git_installer_path }}"
         state: absent
-      when: not art_git_install is changed
 
   rescue:
     - name: Report the git install failure with diagnostics
       ansible.builtin.fail:
         msg: >-
           git-for-windows install failed on {{ inventory_hostname }}:
-          {{ art_git_install.stderr | default('no install result') }}.
+          {{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default('no error output')) }}.
           The atomics clone needs git; fix the download/install and re-run.
-  when: art_git_check.rc != 0
+  when: not art_git_stat.stat.exists
 
 # ---- Defender exclusions FIRST (so the module install is not quarantined) ------
+# ErrorActionPreference=Stop turns a failed Add-MpPreference into a task
+# failure instead of a silent no-op.
 - name: Add the Windows Defender path exclusions for the ART directories
   ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
     $paths = @('{{ art_install_root }}', '{{ art_atomics_dir }}')
     $current = (Get-MpPreference).ExclusionPath
     $added = @()
@@ -82,106 +83,115 @@
     }
     Write-Output ("added=" + ($added -join ','))
   register: art_defender_exclusions
-  changed_when: "'added=' in art_defender_exclusions.stdout and art_defender_exclusions.stdout != 'added='"
-  failed_when: false
+  changed_when: art_defender_exclusions.stdout | trim != 'added='
 
-# ---- PSGallery module at the PINNED version -------------------------------------
-- name: Check if invoke-atomicredteam is installed at the pinned version
-  ansible.windows.win_shell: |
-    $m = Get-Module -ListAvailable -Name invoke-atomicredteam |
-         Where-Object { $_.Version -eq '{{ art_module_version }}' }
-    if ($m) { Write-Output "installed={{ art_module_version }}" } else { Write-Output "installed=no" }
-  changed_when: false
-  register: art_module_check
+# ---- PSGallery modules at PINNED versions ---------------------------------------
+# community.windows.win_psmodule is what GOAD core uses (ansible/roles/common):
+# it enables TLS 1.2 (required by PSGallery), bootstraps NuGet and passes
+# -Force, so Install-Module does not stop at the untrusted-repository prompt.
+- name: Install powershell-yaml {{ art_powershell_yaml_version }} (invoke-atomicredteam dependency, pinned)
+  community.windows.win_psmodule:
+    name: powershell-yaml
+    required_version: "{{ art_powershell_yaml_version }}"
+    state: present
+  register: art_yaml_install
+  until: art_yaml_install is succeeded
+  retries: 3
+  delay: 10
 
 - name: Install invoke-atomicredteam {{ art_module_version }} (exact pin from PSGallery)
-  block:
-    - name: Ensure NuGet package provider (needed by Install-Module)
-      ansible.windows.win_powershell:
-        script: |
-          if (-not (Get-PackageProvider -ListAvailable | Where-Object Name -eq 'NuGet')) {
-            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope AllUsers
-          }
-      register: art_nuget
-      changed_when: art_nuget.output | default([]) | length > 0
-
-    - name: Install the module at the exact pinned version
-      ansible.windows.win_powershell:
-        script: |
-          Install-Module -Name invoke-atomicredteam `
-            -RequiredVersion {{ art_module_version }} `
-            -Scope AllUsers -AllowClobber
-      register: art_module_install
-      until: art_module_install is succeeded
-      retries: 3
-      delay: 10
-
-  rescue:
-    - name: Report the module install failure with diagnostics
-      ansible.builtin.fail:
-        msg: >-
-          invoke-atomicredteam {{ art_module_version }} install failed on
-          {{ inventory_hostname }}:
-          {{ art_module_install.error | default(art_module_install.stderr | default('no error output')) }}.
-          PSGallery reachability + NuGet provider are the usual suspects.
-  when: "'installed=no' in art_module_check.stdout"
+  community.windows.win_psmodule:
+    name: invoke-atomicredteam
+    required_version: "{{ art_module_version }}"
+    allow_clobber: yes
+    state: present
+  register: art_module_install
+  until: art_module_install is succeeded
+  retries: 3
+  delay: 10
 
 # ---- Atomics repo at the PINNED commit ------------------------------------------
 - name: Check if the atomics checkout exists
   ansible.windows.win_stat:
-    path: "{{ art_atomics_dir }}\\index.md"
-  register: art_atomics_dir_stat
+    path: "{{ art_atomics_dir }}\\.git"
+  register: art_atomics_git
 
-- name: Clone the atomic-red-team repo at the pinned SHA
-  block:
-    - name: Create the atomics parent directory
-      ansible.windows.win_file:
-        path: "{{ art_install_root }}"
-        state: directory
+- name: Create the ART install root
+  ansible.windows.win_file:
+    path: "{{ art_install_root }}"
+    state: directory
 
-    - name: Clone atomic-red-team (full clone so the SHA checkout works)
-      ansible.windows.win_command: >
-        git clone {{ art_repo_url }} {{ art_atomics_dir }}
-      register: art_clone
-      when: not art_atomics_dir_stat.stat.exists
+- name: Clone atomic-red-team (full clone so the SHA checkout works)
+  ansible.windows.win_command:
+    argv:
+      - "{{ art_git_exe }}"
+      - clone
+      - --quiet
+      - "{{ art_repo_url }}"
+      - "{{ art_atomics_dir }}"
+  when: not art_atomics_git.stat.exists
 
-    - name: Checkout the pinned commit SHA
-      ansible.windows.win_command: >
-        git checkout {{ art_repo_sha }}
-      args:
-        chdir: "{{ art_atomics_dir }}"
-      register: art_checkout
-      changed_when: art_checkout.stdout != ''
+- name: Read the checked-out atomics commit
+  ansible.windows.win_command:
+    argv:
+      - "{{ art_git_exe }}"
+      - -C
+      - "{{ art_atomics_dir }}"
+      - rev-parse
+      - HEAD
+  changed_when: false
+  register: art_head_before
 
-    - name: Assert the checked-out atomics commit matches the pin
-      ansible.windows.win_command: git rev-parse HEAD
-      args:
-        chdir: "{{ art_atomics_dir }}"
-      changed_when: false
-      register: art_head
-      failed_when: art_head.stdout | trim != art_repo_sha
+- name: Checkout the pinned commit SHA
+  ansible.windows.win_command:
+    argv:
+      - "{{ art_git_exe }}"
+      - -C
+      - "{{ art_atomics_dir }}"
+      - checkout
+      - --quiet
+      - "{{ art_repo_sha }}"
+  when: art_head_before.stdout | trim != art_repo_sha
 
-  rescue:
-    - name: Report the atomics clone/checkout failure
-      ansible.builtin.fail:
-        msg: >-
-          The atomic-red-team clone/checkout failed on {{ inventory_hostname }}.
-          Pin: {{ art_repo_sha }}. If the SHA was force-pushed away upstream,
-          bump art_repo_sha (see the defaults header - upgrades are SHA bumps,
-          this repo has no tags/releases).
-  when: not art_atomics_dir_stat.stat.exists or (art_checkout is defined and art_checkout is changed)
+- name: Assert the checked-out atomics commit matches the pin
+  ansible.windows.win_command:
+    argv:
+      - "{{ art_git_exe }}"
+      - -C
+      - "{{ art_atomics_dir }}"
+      - rev-parse
+      - HEAD
+  changed_when: false
+  register: art_head
+  failed_when: art_head.stdout | trim != art_repo_sha
 
-# ---- AllUsers profile auto-import -------------------------------------------------
-- name: Add the module auto-import to the AllUsers profile
+# ---- AllUsers profile: auto-import + atomics path --------------------------------
+# Every line this role owns ends with art_profile_marker. The task drops the
+# marked lines (and the unmarked import line older versions of this role
+# wrote) and appends the current ones, so a re-run after a pin bump updates
+# the profile instead of leaving the old line in place.
+- name: Configure the AllUsers profile (auto-import + atomics path)
   ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
     $profilePath = $PROFILE.AllUsersAllHosts
-    $line = "Import-Module invoke-atomicredteam -RequiredVersion {{ art_module_version }} -ErrorAction SilentlyContinue"
+    $marker = '{{ art_profile_marker }}'
+    $wanted = @(
+      "Import-Module invoke-atomicredteam -RequiredVersion {{ art_module_version }} -ErrorAction SilentlyContinue $marker",
+      "`$PSDefaultParameterValues['Invoke-AtomicTest:PathToAtomicsFolder'] = '{{ art_atomics_path }}' $marker"
+    )
     $dir = Split-Path $profilePath
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $content = if (Test-Path $profilePath) { Get-Content $profilePath -Raw } else { '' }
-    if ($content -notmatch [regex]::Escape("invoke-atomicredteam")) {
-      Add-Content -Path $profilePath -Value $line
+    $current = @()
+    if (Test-Path $profilePath) { $current = @(Get-Content $profilePath) }
+    $kept = @($current | Where-Object {
+      -not $_.EndsWith($marker) -and
+      $_ -notmatch '^Import-Module invoke-atomicredteam -RequiredVersion \S+ -ErrorAction SilentlyContinue$'
+    })
+    $new = $kept + $wanted
+    if (($current -join "`n") -ne ($new -join "`n")) {
+      Set-Content -Path $profilePath -Value $new
       Write-Output "profile-updated"
     } else { Write-Output "profile-already" }
   register: art_profile
   changed_when: "'profile-updated' in art_profile.stdout"
+  when: art_profile_import | bool
