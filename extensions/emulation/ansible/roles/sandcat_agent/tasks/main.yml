@@ -1,0 +1,78 @@
+# emulation extension : Sandcat agent deploy (windows domain hosts)
+#
+# Flow: install dir -> Defender exclusion for the sandcat dir FIRST (so the
+# download is not quarantined) -> download the prebuilt sandcat.go-windows
+# from the Caldera server (the WebClient call from Caldera's own Sandcat docs:
+# headers file=sandcat.go + platform=windows against /file/download) ->
+# register a boot scheduled task running as SYSTEM -> start it now so the
+# agent checks in during provisioning, not only after a reboot.
+#
+# The agent must be able to reach the Caldera VM on the http contact port
+# (sandcat_port). If an agent never checks in, that path (host / provider
+# firewall) is the first thing to check - see the extension README.
+
+- name: Create the sandcat install dir
+  ansible.windows.win_file:
+    path: "{{ sandcat_install_dir }}"
+    state: directory
+
+# Defender exclusion FIRST. The ART role's exclusions only cover the ART
+# dirs, so sandcat needs its own. ErrorActionPreference=Stop turns a failed
+# Add-MpPreference into a task failure instead of a silent no-op.
+- name: Add the Windows Defender path exclusion for the sandcat dir
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $p = '{{ sandcat_install_dir }}'
+    if ((Get-MpPreference).ExclusionPath -notcontains $p) {
+      Add-MpPreference -ExclusionPath $p
+      Write-Output 'added'
+    } else { Write-Output 'present' }
+  register: sandcat_defender
+  changed_when: "'added' in sandcat_defender.stdout"
+
+# Download the agent. win_get_url cannot send the file/platform headers the
+# C2 needs to pick the payload, so use the documented WebClient call. creates:
+# keeps it idempotent - the server has no Go, so the payload never changes.
+- name: Download the sandcat agent from the Caldera server
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $wc = New-Object System.Net.WebClient
+    $wc.Headers.add('platform', 'windows')
+    $wc.Headers.add('file', 'sandcat.go')
+    $wc.DownloadFile('{{ sandcat_server_url }}/file/download', '{{ sandcat_exe_path }}')
+  args:
+    creates: "{{ sandcat_exe_path }}"
+
+- name: Assert the downloaded agent is a real PE binary (not an error page)
+  ansible.windows.win_stat:
+    path: "{{ sandcat_exe_path }}"
+  register: sandcat_exe_stat
+  failed_when: not sandcat_exe_stat.stat.exists or sandcat_exe_stat.stat.size < 100000
+
+# Boot-persistent scheduled task running as SYSTEM. A plain console binary
+# cannot be a Windows service (the SCM kills it for not reporting RUNNING),
+# so a scheduled task is the right persistence primitive.
+- name: Register the sandcat boot scheduled task (SYSTEM)
+  community.windows.win_scheduled_task:
+    name: "{{ sandcat_task_name }}"
+    description: "GOAD emulation extension - Caldera Sandcat agent"
+    actions:
+      - path: "{{ sandcat_exe_path }}"
+        arguments: "-server {{ sandcat_server_url }} -group {{ sandcat_group }} -paw {{ sandcat_paw }}"
+    triggers:
+      - type: boot
+    username: SYSTEM
+    run_level: highest
+    state: present
+    enabled: yes
+
+# Start it now so the agent checks in during provisioning. Guard on a running
+# process so a re-run does not spawn a second agent.
+- name: Start the sandcat agent now if it is not already running
+  ansible.windows.win_shell: |
+    if (-not (Get-Process -Name sandcat -ErrorAction SilentlyContinue)) {
+      Start-ScheduledTask -TaskName '{{ sandcat_task_name }}'
+      Write-Output 'started'
+    } else { Write-Output 'already-running' }
+  register: sandcat_start
+  changed_when: "'started' in sandcat_start.stdout"

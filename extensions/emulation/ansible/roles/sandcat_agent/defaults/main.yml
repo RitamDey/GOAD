@@ -1,0 +1,28 @@
+# emulation extension : sandcat_agent role defaults
+#
+# Deploys the Caldera Sandcat agent on every domain windows host and keeps it
+# running across reboots, so the lab has live agents without the manual
+# "deploy from the UI" step. The agent binary is pulled from the running
+# Caldera server (no Go on that server, so /file/download serves the prebuilt
+# sandcat.go-windows payload - deterministic, no dynamic recompile).
+
+# Where the agent lives on the windows host. A dedicated dir (NOT under the
+# ART tree) so its Defender exclusion is scoped to sandcat only.
+sandcat_install_dir: 'C:\Tools\Sandcat'
+sandcat_exe_path: 'C:\Tools\Sandcat\sandcat.exe'
+
+# The Caldera server. 'emulation' is the server host defined in this
+# extension's inventory (ansible_host = <ip_range>.54); the UI and the agent
+# http contact share this port.
+sandcat_port: 8888
+sandcat_server_host: "{{ hostvars['emulation'].ansible_host }}"
+sandcat_server_url: "http://{{ sandcat_server_host }}:{{ sandcat_port }}"
+
+# Agent group + identifier. The paw is set to the inventory hostname so the
+# server-side health check can match a check-in back to each host.
+sandcat_group: red
+sandcat_paw: "{{ inventory_hostname }}"
+
+# Boot-persistence: a scheduled task (NOT a Windows service - sandcat is a
+# plain console binary and the SCM would kill a non-service exe).
+sandcat_task_name: GOAD-Sandcat
