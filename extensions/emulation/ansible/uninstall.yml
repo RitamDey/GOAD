@@ -1,10 +1,23 @@
 # emulation extension : uninstall playbook
 # Reverse of install.yml, best-effort per host: removes everything the
-# extension PUT ON THE ENDPOINTS and the extension's own state. Run directly
-# against the instance inventory:
+# extension PUT ON THE ENDPOINTS and the extension's own state.
 #
-#   ansible-playbook -i <workspace>/<instance>/emulation_inventory \
-#     extensions/emulation/ansible/uninstall.yml
+# Run it from extensions/emulation/ansible (so ansible.cfg applies) with the
+# same inventories goad's run_extension() passes to install.yml:
+#
+#   cd extensions/emulation/ansible
+#   ansible-playbook \
+#     -i ../../../ad/<lab>/data/inventory \
+#     -i ../../../workspace/<instance_id>/inventory \
+#     -i ../../../workspace/<instance_id>/emulation_inventory \
+#     -i ../../../globalsettings.ini \
+#     uninstall.yml
+#
+# (add -i ../../../workspace/<instance_id>/<ext>_inventory for every other
+# enabled extension, like run_extension does)
+#
+# The plays have no roles, so the role defaults are loaded with vars_files
+# (paths, versions, service names stay in one place).
 #
 # (on main the goad CLI has no uninstall_extension command - goad.py only
 # ever calls run_extension with install=True, so this playbook is the
@@ -27,6 +40,7 @@
 #
 # What is NOT removed (deliberate):
 #   - git itself (system-wide tool; other things may use it)
+#   - the powershell-yaml module (shared dependency, other modules may use it)
 #   - anything Defender/GOAD-core configured (realtime, ASR, PPL) - only the
 #     two ART path exclusions are removed
 #   - the ART C:\Tools\AtomicRedTeam parent when other tooling lives there
@@ -38,6 +52,8 @@
 - name: Uninstall Atomic Red Team (windows machines)
   hosts: emulation_agents
   gather_facts: yes
+  vars_files:
+    - roles/atomic_redteam/defaults/main.yml
   tasks:
     # ---- ART install root ----------------------------------------------------
     - name: Check if the ART install root exists
@@ -66,16 +82,25 @@
       changed_when: "'module-removed' in art_module_uninstall.stdout"
 
     # ---- AllUsers profile import line ------------------------------------------
-    - name: Remove the profile auto-import line
-      ansible.windows.win_powershell:
-        script: |
-          $profilePath = $PROFILE.AllUsersAllHosts
-          if (Test-Path $profilePath) {
-            $content = Get-Content $profilePath | Where-Object { $_ -notmatch 'invoke-atomicredteam' }
-            Set-Content -Path $profilePath -Value $content
+    # drops the lines the install marked with art_profile_marker, plus the
+    # unmarked import line older versions of the role wrote
+    - name: Remove the profile lines written by the install
+      ansible.windows.win_shell: |
+        $profilePath = $PROFILE.AllUsersAllHosts
+        $marker = '{{ art_profile_marker }}'
+        if (Test-Path $profilePath) {
+          $current = @(Get-Content $profilePath)
+          $kept = @($current | Where-Object {
+            -not $_.EndsWith($marker) -and
+            $_ -notmatch '^Import-Module invoke-atomicredteam -RequiredVersion \S+ -ErrorAction SilentlyContinue$'
+          })
+          if ($kept.Count -ne $current.Count) {
+            Set-Content -Path $profilePath -Value $kept
             Write-Output "profile-cleaned"
-          } else { Write-Output "profile-absent" }
-      changed_when: "'profile-cleaned' in art_module_uninstall.stdout"
+          } else { Write-Output "profile-unchanged" }
+        } else { Write-Output "profile-absent" }
+      register: art_profile_cleanup
+      changed_when: "'profile-cleaned' in art_profile_cleanup.stdout"
       failed_when: false
 
     # ---- Defender path exclusions (ONLY the two ART paths) ---------------------
@@ -108,6 +133,12 @@
 - name: Uninstall the Caldera server (emulation VM)
   hosts: emulation_server
   become: yes
+  vars_files:
+    - roles/caldera_server/defaults/main.yml
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: yes
   tasks:
     - name: Check if the caldera service unit exists
       ansible.builtin.stat:
@@ -141,6 +172,15 @@
       ansible.builtin.file:
         path: "{{ caldera_install_dir }}"
         state: absent
+
+    - name: Remove the Node.js used for the UI build (tarball, unpacked dir, link)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ caldera_node_dir }}"
+        - "{{ caldera_node_root }}/node-v{{ caldera_node_version }}-linux-x64"
+        - "{{ caldera_node_root }}/node-v{{ caldera_node_version }}-linux-x64.tar.xz"
 
     - name: Remove the emulation state dir
       ansible.builtin.file:
