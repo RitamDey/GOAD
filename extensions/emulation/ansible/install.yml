@@ -6,8 +6,10 @@
 #          path exclusions for the ART dirs only), then assert each endpoint
 #          came up healthy (per-host results; no single slow host fails the
 #          play).
-# Play 3 : roll up the per-host ART results into one table on the emulation
-#          VM (stage: aggregate) and grade the fleet.
+# Play 3 : deploy the Caldera Sandcat agent on every domain windows machine
+#          (boot scheduled task, started now) so the lab has live agents.
+# Play 4 : roll up the per-host ART results into one table on the emulation
+#          VM (stage: aggregate) and report the sandcat check-ins.
 
 - name: Install Caldera server (emulation)
   hosts: emulation_server
@@ -22,8 +24,18 @@
     - { role: 'atomic_redteam', tags: 'art' }
     - { role: 'health_assertions', tags: 'health_assertions', stage: 'verify_agents' }
 
-- name: Roll up endpoint health (aggregate)
+- name: Deploy the Sandcat agent on windows machines
+  hosts: emulation_agents
+  roles:
+    - { role: 'sandcat_agent', tags: 'sandcat' }
+
+- name: Roll up endpoint health (aggregate) + sandcat check-ins
   hosts: emulation_server
   become: yes
+  # caldera_server is not a role in this play, so load its defaults for the
+  # sandcat check-in's caldera_port / caldera_api_key_red
+  vars_files:
+    - roles/caldera_server/defaults/main.yml
   roles:
     - { role: 'health_assertions', tags: 'health_assertions', stage: 'aggregate' }
+    - { role: 'health_assertions', tags: ['health_assertions', 'sandcat'], stage: 'verify_sandcat' }

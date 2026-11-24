@@ -49,12 +49,43 @@
 #     you want the operation reports, copy /opt/caldera/data first (the
 #     playbook prints a reminder)
 
-- name: Uninstall Atomic Red Team (windows machines)
+- name: Uninstall Atomic Red Team + Sandcat (windows machines)
   hosts: emulation_agents
   gather_facts: yes
   vars_files:
     - roles/atomic_redteam/defaults/main.yml
+    - roles/sandcat_agent/defaults/main.yml
   tasks:
+    # ---- Sandcat agent -------------------------------------------------------
+    - name: Remove the sandcat boot scheduled task
+      community.windows.win_scheduled_task:
+        name: "{{ sandcat_task_name }}"
+        state: absent
+
+    - name: Stop any running sandcat agent
+      ansible.windows.win_shell: |
+        $p = Get-Process -Name sandcat -ErrorAction SilentlyContinue
+        if ($p) { $p | Stop-Process -Force; Write-Output 'stopped' } else { Write-Output 'absent' }
+      register: sandcat_stop
+      changed_when: "'stopped' in sandcat_stop.stdout"
+      failed_when: false
+
+    - name: Remove the sandcat install dir
+      ansible.windows.win_file:
+        path: "{{ sandcat_install_dir }}"
+        state: absent
+
+    - name: Remove the sandcat Windows Defender path exclusion
+      ansible.windows.win_shell: |
+        $p = '{{ sandcat_install_dir }}'
+        if ((Get-MpPreference).ExclusionPath -contains $p) {
+          Remove-MpPreference -ExclusionPath $p
+          Write-Output 'removed'
+        } else { Write-Output 'absent' }
+      register: sandcat_excl_removal
+      changed_when: "'removed' in sandcat_excl_removal.stdout"
+      failed_when: false
+
     # ---- ART install root ----------------------------------------------------
     - name: Check if the ART install root exists
       ansible.windows.win_stat:

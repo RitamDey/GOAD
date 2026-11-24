@@ -20,8 +20,13 @@
 - The Caldera install carries the plugins this extension exists for:
     - **emu** - the CTID Adversary Emulation Plans (APT29, Fin6, ... profiles)
     - **sandcat** - the Caldera agent (prebuilt `sandcat.go-windows` ships in
-      the pinned submodule; deploy it manually from the Caldera UI)
+      the pinned submodule; this extension deploys it automatically, see below)
     - **atomic** - import/plan Atomic Red Team techniques inside Caldera
+  The emu plugin's non-redistributable payloads (AdFind, PsExec, putty,
+  mimikatz, ...) are fetched on the server after it comes up via
+  `plugins/emu/download_payloads.sh` (`caldera_fetch_emu_payloads: true`,
+  best-effort - the sources are unpinned third-party sites; set it to false
+  for an air-gapped lab).
 - On every domain Windows machine:
     - the **Atomic Red Team** PowerShell framework (`invoke-atomicredteam`,
       pinned to an exact PSGallery version) with the atomics repository
@@ -29,10 +34,15 @@
       AllUsers profile imports the module and points `Invoke-AtomicTest` at
       `C:\Tools\AtomicRedTeam\atomics\atomics` (its built-in default is
       `C:\AtomicRedTeam\atomics`)
+    - a live **Sandcat agent** - the prebuilt `sandcat.go-windows` is
+      downloaded from the Caldera server into `C:\Tools\Sandcat`, registered
+      as a SYSTEM boot scheduled task (`GOAD-Sandcat`) and started during
+      provisioning, so the host checks in to Caldera as a `red`-group agent
+      with its hostname as the paw (no manual UI deploy needed)
     - **Windows Defender path exclusions** (Add-MpPreference) for the ART
-      directories ONLY - path-scoped so payloads/atomics are not quarantined
-      on the `[defender_on]` hosts (DC01-03, SRV03); SRV02 (realtime off)
-      is unaffected either way
+      directories AND the sandcat directory ONLY - path-scoped so
+      payloads/atomics/agent are not quarantined on the `[defender_on]` hosts
+      (DC01-03, SRV03); SRV02 (realtime off) is unaffected either way
 - Run an adversary emulation from the Caldera UI (or fire TXXXX atomics
   manually with invoke-atomicredteam) and watch the technique fire
 
@@ -49,9 +59,11 @@ API integration, no exception-list writes). It coexists happily with
 
 One port serves both (Caldera's `conf/default.yml` ships the UI port and the
 http contact on the same 8888). **This is the day-one gotcha:** the windows
-machines must be able to reach the EMULATION machine on 8888 or Sandcat can
-never check in - deploy sandcat from the UI and the first thing to check on
-a "stuck" agent is host/provider firewall on that path. The install opens
+machines must be able to reach the EMULATION machine on 8888 or the Sandcat
+agent (deployed automatically by this extension) can never check in - the
+first thing to check on a "stuck" agent is host/provider firewall on that
+path (the install's sandcat health check reports which hosts are missing).
+The install opens
 8888 in ufw when ufw is active; if your provider adds ACLs (ludus, aws
 security groups, azure NSG, proxmox firewall), make sure 8888 toward the
 emulation VM is allowed.
@@ -113,8 +125,10 @@ loudly), and the three submodule SHAs are asserted after the recursive clone.
   machines) is installed after `emulation`, the newcomers get no ART until
   you re-run the install (`install_extension emulation` /
   `provision_extension emulation`). The re-run is idempotent.
-- **Sandcat is a second agent on the hosts** - it coexists with the Elastic
-  Agent / wazuh agent / sysmon; nothing is uninstalled or reconfigured.
+- **The Sandcat agent is a second agent on the hosts** - it coexists with the
+  Elastic Agent / wazuh agent / sysmon; nothing is uninstalled or
+  reconfigured. With elastic-edr or wazuh co-installed, its check-in and any
+  operations run through it are themselves part of the detection data.
 
 ## Credentials (this is a lab)
 
@@ -135,15 +149,20 @@ the VM's `conf/local.yml` at install).
 - 8GB RAM / 2 cpu / >= 20GB free disk on the EMULATION machine (already set
   in every provider file)
 - Internet access from the EMULATION machine (github.com, pypi.org,
-  nodejs.org, registry.npmjs.org) and from the windows machines (github.com,
-  PowerShell Gallery). On the first start Caldera's emu and atomic plugins
+  nodejs.org, registry.npmjs.org, plus the third-party sites in
+  `download_payloads.sh`) and from the windows machines (github.com,
+  PowerShell Gallery, and the EMULATION machine on 8888 for the Sandcat
+  download + callback). On the first start Caldera's emu and atomic plugins
   clone their content repositories, so the UI can take a few minutes to
   answer (the install waits up to 10 min, `caldera_health_retries`).
-- The emu plugin's non-redistributable payloads (AdFind, PsExec, ...) are NOT
-  downloaded: upstream fetches them with `plugins/emu/download_payloads.sh`
-  from third-party sites without version pins. Run it yourself on the
-  EMULATION machine (as the `caldera` user, in `/opt/caldera/plugins/emu`)
-  if an emulation plan needs them.
+- The emu plugin's non-redistributable payloads (AdFind, PsExec, putty,
+  mimikatz, ...) ARE fetched after the server is up, best-effort, via
+  `plugins/emu/download_payloads.sh` (`caldera_fetch_emu_payloads: true`).
+  Those sources are unpinned third-party sites with no checksums and some
+  are often offline, so a failed download never fails the install (the log
+  is `/opt/caldera/plugins/emu/payloads-download.log`). Set
+  `caldera_fetch_emu_payloads: false` for an air-gapped lab or to skip
+  pulling offensive binaries.
 - On ludus prepare template :
 ```
 ludus templates add -d ubuntu-22.04-x64-server
@@ -183,11 +202,13 @@ enabled list.)
 
 Removes: on the agents, `C:\Tools\AtomicRedTeam` (atomics + installers), the
 `invoke-atomicredteam` module at the pinned version (`Uninstall-Module
--AllUsers`), the AllUsers profile lines it wrote, and the two Windows Defender
-`ExclusionPath` entries (`Remove-MpPreference`, ONLY the ART paths). On the
-emulation VM, the caldera systemd unit + service, `/opt/caldera`, the Node.js
-used for the UI build (`/opt/node*`), the `/etc/emulation` state dir, the ufw 8888 rule (ufw-active hosts only), and
-the `caldera` service user.
+-AllUsers`), the AllUsers profile lines it wrote, the Sandcat agent (the
+`GOAD-Sandcat` scheduled task, the running `sandcat` process and
+`C:\Tools\Sandcat`), and the Windows Defender `ExclusionPath` entries
+(`Remove-MpPreference`, ONLY the ART and sandcat paths). On the emulation VM,
+the caldera systemd unit + service, `/opt/caldera`, the Node.js used for the
+UI build (`/opt/node*`), the `/etc/emulation` state dir, the ufw 8888 rule
+(ufw-active hosts only), and the `caldera` service user.
 
 Kept on purpose: git itself (a system tool), the powershell-yaml module (a
 shared dependency), every other Defender setting

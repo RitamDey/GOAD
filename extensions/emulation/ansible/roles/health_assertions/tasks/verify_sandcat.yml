@@ -1,0 +1,49 @@
+# health_assertions : sandcat check-in verification (runs on the EMULATION VM)
+# Polls the Caldera agents API and reports which windows hosts have a live
+# sandcat agent. Non-fatal by design: a missing check-in is almost always a
+# host/provider firewall on the agent -> server path (sandcat_port), which is
+# environment-specific, so it warns with that hint instead of failing the
+# whole provision. The agent paw is the inventory hostname (sandcat_agent
+# passes -paw), so each check-in maps back to a host.
+
+- name: Poll the Caldera agents API for sandcat check-ins
+  ansible.builtin.uri:
+    url: "http://localhost:{{ caldera_port }}/api/v2/agents"
+    method: GET
+    headers:
+      KEY: "{{ caldera_api_key_red }}"
+    status_code: 200
+    return_content: yes
+  register: sandcat_agents_api
+  retries: "{{ sandcat_checkin_retries | default(18) }}"   # x10s = 3 min
+  delay: 10
+  until: sandcat_agents_api.json | default([]) | length >= (groups['emulation_agents'] | default([]) | length)
+  failed_when: false
+
+- name: Collect the paws that checked in
+  ansible.builtin.set_fact:
+    sandcat_seen_paws: "{{ sandcat_agents_api.json | default([]) | map(attribute='paw') | list }}"
+    sandcat_expected_hosts: "{{ groups['emulation_agents'] | default([]) }}"
+
+- name: Compute which hosts have not checked in
+  ansible.builtin.set_fact:
+    sandcat_missing: "{{ sandcat_expected_hosts | difference(sandcat_seen_paws) }}"
+
+- name: Show the sandcat check-in summary
+  ansible.builtin.debug:
+    msg: |
+      ================== SANDCAT AGENT CHECK-INS ==================
+      checked in : {{ sandcat_seen_paws | length }}/{{ sandcat_expected_hosts | length }}
+      paws       : {{ sandcat_seen_paws | join(', ') | default('(none)', true) }}
+      missing    : {{ sandcat_missing | join(', ') | default('(none)', true) }}
+      ============================================================
+
+- name: Warn about hosts whose sandcat agent has not checked in (non-fatal)
+  ansible.builtin.debug:
+    msg: >-
+      {{ sandcat_missing | length }} host(s) have no sandcat agent yet
+      ({{ sandcat_missing | join(', ') }}). The agent reaches the server on
+      {{ caldera_port }}/tcp - check the host/provider firewall on that path,
+      then re-run (install_extension emulation). A slow first beacon can also
+      just need another minute.
+  when: sandcat_missing | length > 0

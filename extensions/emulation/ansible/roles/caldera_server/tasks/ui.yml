@@ -4,8 +4,21 @@
 # renders plugins/magma/dist/index.html for the UI (app/api/rest_api.py), so
 # the dist/ folder has to exist before the service starts. This is what
 # `server.py --build` does (npm install + npm run build in plugins/magma);
-# doing it here once keeps the service start fast and uses `npm ci` against
+# doing it here keeps the service start fast and uses `npm ci` against
 # magma's committed package-lock.json for a reproducible install.
+#
+# The build runs when dist/ is missing OR the Caldera checkout was just
+# (re)synced to a new pin (caldera_clone is changed) - a `creates:` guard
+# alone would leave a stale UI behind after a version bump.
+
+- name: Check if the magma UI is already built
+  ansible.builtin.stat:
+    path: "{{ caldera_install_dir }}/plugins/magma/dist/index.html"
+  register: caldera_magma_dist
+
+- name: Decide whether the UI needs (re)building
+  ansible.builtin.set_fact:
+    caldera_build_ui: "{{ (not caldera_magma_dist.stat.exists) or (caldera_clone is defined and caldera_clone is changed) }}"
 
 - name: Download the pinned Node.js tarball (sha256-verified)
   ansible.builtin.get_url:
@@ -31,17 +44,19 @@
   ansible.builtin.command:
     cmd: "{{ caldera_node_dir }}/bin/npm ci --no-audit --no-fund"
     chdir: "{{ caldera_install_dir }}/plugins/magma"
-    creates: "{{ caldera_install_dir }}/plugins/magma/dist/index.html"
   environment:
     PATH: "{{ caldera_node_dir }}/bin:{{ ansible_env.PATH | default('/usr/local/bin:/usr/bin:/bin') }}"
   become_user: "{{ caldera_user }}"
+  when: caldera_build_ui | bool
+  changed_when: true
 
 - name: Build the magma UI (npm run build -> plugins/magma/dist)
   ansible.builtin.command:
     cmd: "{{ caldera_node_dir }}/bin/npm run build"
     chdir: "{{ caldera_install_dir }}/plugins/magma"
-    creates: "{{ caldera_install_dir }}/plugins/magma/dist/index.html"
   environment:
     PATH: "{{ caldera_node_dir }}/bin:{{ ansible_env.PATH | default('/usr/local/bin:/usr/bin:/bin') }}"
   become_user: "{{ caldera_user }}"
+  when: caldera_build_ui | bool
+  changed_when: true
   notify: Restart caldera
