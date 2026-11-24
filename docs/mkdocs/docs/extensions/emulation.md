@@ -6,13 +6,20 @@
 - Add a machine : emulation (ip_range.54, 8GB RAM / 2 cpu)
 
 - MITRE **Caldera 5.3.0** adversary-emulation server (systemd service, python
-  venv, deterministic `conf/local.yml`) with the **emu** (CTID Adversary
-  Emulation Plans), **sandcat** (the agent) and **atomic** (ART technique
-  import) plugins
+  venv, deterministic `conf/local.yml` = the release's `conf/default.yml` +
+  lab overrides) with the **emu** (CTID Adversary Emulation Plans),
+  **sandcat** (the agent) and **atomic** (ART technique import) plugins, and
+  the v5 Vue UI built once at install time (pinned Node.js 22.23.5)
 - **Atomic Red Team** PowerShell framework on all domain windows machines
   (pinned `invoke-atomicredteam` + the atomics repo at a pinned commit into
-  `C:\Tools\AtomicRedTeam\atomics`), with **Windows Defender path
-  exclusions** scoped to the ART directories only
+  `C:\Tools\AtomicRedTeam\atomics`; the AllUsers profile points
+  `Invoke-AtomicTest` at its `atomics` subfolder), with **Windows Defender
+  path exclusions** scoped to the ART directories only
+
+The first Caldera start clones the emu and atomic content repositories, so
+the UI can take a few minutes to come up (the install waits up to 10 min).
+The emu plugin's non-redistributable payloads are not downloaded (see the
+extension README).
 
 This extension is STANDALONE - it does not couple to `elastic-edr` (no
 Fleet/Defend API integration, no exception lists) and coexists with
@@ -74,11 +81,21 @@ only - nothing else about Defender's posture changes.
 ```
 instance_id> install_extension emulation
 ```
-Uninstall: `ansible/uninstall.yml` (2 plays, mirrors install.yml - run it
-against the instance inventory; the goad CLI has no uninstall command on
-main, the playbook is the supported teardown). It removes the ART dirs +
-module + profile line + the two ART Defender exclusions on the agents, and
-the caldera service + `/opt/caldera` + `/etc/emulation` + the ufw rule on
-the emulation VM. Kept on purpose: git, every other Defender setting, the
+Uninstall: `ansible/uninstall.yml` (2 plays, mirrors install.yml; the goad
+CLI has no uninstall command on main, the playbook is the supported
+teardown). Run it with the same inventories the install uses:
+```
+cd extensions/emulation/ansible
+ansible-playbook \
+  -i ../../../ad/<lab>/data/inventory \
+  -i ../../../workspace/<instance_id>/inventory \
+  -i ../../../workspace/<instance_id>/emulation_inventory \
+  -i ../../../globalsettings.ini \
+  uninstall.yml
+```
+It removes the ART dirs + module + profile lines + the two ART Defender
+exclusions on the agents, and the caldera service + `/opt/caldera` + the
+Node.js build toolchain + `/etc/emulation` + the ufw rule on the emulation
+VM. Kept on purpose: git, powershell-yaml, every other Defender setting, the
 VM itself. Caldera operation reports (`/opt/caldera/data`) are printed as a
 copy-me reminder before deletion.

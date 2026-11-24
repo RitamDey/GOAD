@@ -1,0 +1,29 @@
+# caldera_server : conf/local.yml = the release's conf/default.yml + overrides
+#
+# Caldera 5.3.0 started with `-E local` reads ONLY conf/local.yml (server.py,
+# no merge with default.yml), so the file must carry every stock key. Writing
+# it before the first start also means ensure_local_config() never generates
+# random credentials (app/utility/config_generator.py returns early when the
+# file exists).
+#
+# Caldera rewrites conf/local.yml with yaml.dump() on a clean shutdown
+# (app_svc._save_configurations). to_nice_yaml(indent=2) produces the same
+# layout (sorted keys, block style, 2-space indent), so a re-run does not see
+# a spurious change and restart the service.
+
+- name: Read the stock conf/default.yml of the pinned release
+  ansible.builtin.slurp:
+    src: "{{ caldera_install_dir }}/conf/default.yml"
+  register: caldera_default_conf
+
+- name: Deploy conf/local.yml (stock defaults + lab overrides)
+  ansible.builtin.copy:
+    dest: "{{ caldera_install_dir }}/conf/local.yml"
+    content: >-
+      {{ (caldera_default_conf.content | b64decode | from_yaml)
+         | combine(caldera_config_overrides, {'port': caldera_port | int})
+         | to_nice_yaml(indent=2) }}
+    owner: "{{ caldera_user }}"
+    group: "{{ caldera_user }}"
+    mode: "0640"
+  notify: Restart caldera

@@ -6,8 +6,10 @@
 #                        from PSGallery (verified live: 2.3.0 is the latest
 #                        published version; the GitHub repo tags releases in
 #                        lockstep, v2.3.0 confirmed). Installed with
-#                        Install-Module -RequiredVersion (never -Force, never
-#                        "latest").
+#                        community.windows.win_psmodule required_version
+#                        (the module GOAD core uses: it enables TLS 1.2,
+#                        bootstraps NuGet and passes -Force, which PSGallery
+#                        installs need on Windows PowerShell 5.1).
 #
 #   art_repo_sha       - the redcanaryco/atomic-red-team commit SHA the
 #                        atomics are cloned at. This repo has ZERO releases
@@ -20,12 +22,22 @@
 #                        388942adbd9641f4dfdcf079d7efe9a75ec0ac43 = master
 #                        head, 2026-09-05.
 art_module_version: "2.3.0"
+# invoke-atomicredteam 2.3.0 declares powershell-yaml with NO version bound
+# (nuspec dependency + RequiredModules), so it is installed first at an
+# explicit version (0.4.12 = latest on PSGallery when this pin was taken).
+art_powershell_yaml_version: "0.4.12"
 art_repo_sha: "388942adbd9641f4dfdcf079d7efe9a75ec0ac43"
 art_repo_url: "https://github.com/redcanaryco/atomic-red-team.git"
 
 # Install locations (Defender exclusions are scoped to EXACTLY these paths)
 art_install_root: "C:\\Tools\\AtomicRedTeam"
+# the atomic-red-team git checkout ...
 art_atomics_dir: "C:\\Tools\\AtomicRedTeam\\atomics"
+# ... and the atomics folder inside it (atomics/T*/T*.yaml in the repo).
+# Invoke-AtomicTest defaults to C:\AtomicRedTeam\atomics
+# (Public/Invoke-AtomicTest.ps1), so the AllUsers profile points
+# $PSDefaultParameterValues['Invoke-AtomicTest:PathToAtomicsFolder'] here.
+art_atomics_path: "{{ art_atomics_dir }}\\atomics"
 
 # git is the transport for the atomics clone (pinned SHA checkout); the
 # PowerShell module comes from PSGallery (NuGet-backed).
@@ -33,11 +45,19 @@ art_git_url: "https://github.com/git-for-windows/git/releases/download/v2.47.1.w
 # sha256 of Git-2.47.1-64-bit.exe (downloaded + hashed at build time)
 art_git_installer_sha256: "25527923debc06515b3016f2d6bca0820656e8281a23be2f43bfb658bd5dda70"
 art_git_installer_path: "C:\\Tools\\AtomicRedTeam\\git-installer.exe"
+# Inno Setup uninstall key of Git for Windows (installer/install.iss in
+# git-for-windows/build-extra: AppName=Git, no AppId -> "Git_is1")
+art_git_product_id: "Git_is1"
+# git is always called by full path: a new WinRM shell is not guaranteed to
+# see the PATH entry the installer just added (install.iss: DefaultDirName
+# {commonpf}\Git, PATH entry <app>\cmd)
+art_git_exe: "C:\\Program Files\\Git\\cmd\\git.exe"
 
-# PSModulePath-based auto-import: write an Import-Module line into the
-# AllUsers profile so every interactive/shell session has
-# invoke-atomicredteam available (what Caldera's atomic plugin docs assume).
+# AllUsers profile: import invoke-atomicredteam and point Invoke-AtomicTest at
+# art_atomics_path in every Windows PowerShell session. Each line written
+# carries art_profile_marker so re-runs and the uninstall can find them.
 art_profile_import: true
+art_profile_marker: "# goad-emulation-extension"
 
 # Health-check tuning (verify_agents stage)
 art_health_retries: 6      # x10s = 1 min for the module import to settle

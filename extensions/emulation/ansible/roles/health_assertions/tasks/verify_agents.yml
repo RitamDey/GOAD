@@ -19,7 +19,9 @@
   register: art_module_verify
   changed_when: false
   failed_when: false
-  until: art_module_verify.stdout is search('module-ok=')
+  # both outcomes print "module-ok=", so match the pinned version itself or
+  # the retries never happen
+  until: art_module_verify.stdout is search('module-ok=' ~ art_module_version)
   retries: "{{ art_health_retries | default(6) }}"
   delay: "{{ art_health_delay | default(10) }}"
 
@@ -29,7 +31,8 @@
     $sha = ''
     $atomCount = 0
     if (Test-Path $dir) {
-      $sha = (git -C $dir rev-parse HEAD) 2>$null
+      # full path: a WinRM shell may not see the PATH entry the git installer added
+      $sha = (& '{{ art_git_exe }}' -C $dir rev-parse HEAD) 2>$null
       $atomCount = (Get-ChildItem -Path "$dir\atomics" -Directory -ErrorAction SilentlyContinue | Measure-Object).Count
     }
     Write-Output ("atomics_dir=" + (Test-Path $dir))

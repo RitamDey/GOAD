@@ -11,16 +11,24 @@
 ## What it does
 
 - Deploys **MITRE Caldera 5.3.0** on one linux machine (8GB RAM / 2 cpu) as a
-  systemd service, in a python venv, with a fully deterministic `conf/local.yml`
+  systemd service, in a python venv, with a deterministic `conf/local.yml`
+  (the release's own `conf/default.yml` + the lab credentials/plugins - Caldera
+  reads only `local.yml`, so every stock key has to be in it)
+- Builds the Caldera v5 **Vue UI** (`plugins/magma`, `npm ci && npm run build`)
+  once at install time with a pinned, sha256-checked Node.js - Caldera 5.3.0
+  does not start without `plugins/magma/dist`
 - The Caldera install carries the plugins this extension exists for:
     - **emu** - the CTID Adversary Emulation Plans (APT29, Fin6, ... profiles)
     - **sandcat** - the Caldera agent (prebuilt `sandcat.go-windows` ships in
       the pinned submodule; deploy it manually from the Caldera UI)
     - **atomic** - import/plan Atomic Red Team techniques inside Caldera
-- On every domain Windows machine (commit 2):
+- On every domain Windows machine:
     - the **Atomic Red Team** PowerShell framework (`invoke-atomicredteam`,
       pinned to an exact PSGallery version) with the atomics repository
-      cloned at a pinned commit into `C:\Tools\AtomicRedTeam\atomics`
+      cloned at a pinned commit into `C:\Tools\AtomicRedTeam\atomics`; the
+      AllUsers profile imports the module and points `Invoke-AtomicTest` at
+      `C:\Tools\AtomicRedTeam\atomics\atomics` (its built-in default is
+      `C:\AtomicRedTeam\atomics`)
     - **Windows Defender path exclusions** (Add-MpPreference) for the ART
       directories ONLY - path-scoped so payloads/atomics are not quarantined
       on the `[defender_on]` hosts (DC01-03, SRV03); SRV02 (realtime off)
@@ -57,9 +65,12 @@ emulation VM is allowed.
 | sandcat plugin (submodule) | `0a35cd525f1cfabfcf602282428055c41f144513` (agent 2.9.0-0723cab) | `caldera_server/defaults` |
 | atomic plugin (submodule) | `b90958810ffae1d328124f9e8af75f524616b27f` | `caldera_server/defaults` |
 | python | 3.10 (ubuntu-22.04 default; Caldera 5.3.0 supports 3.9+) | `caldera_server/defaults` (`caldera_python_bin`) |
-| pyminizip (emu dep) | 0.2.6 | `caldera_server/tasks` |
-| invoke-atomicredteam | 2.3.0 | `atomic_redteam/defaults` (commit 2) |
-| atomic-red-team atomics | commit SHA `388942adbd9641f4dfdcf079d7efe9a75ec0ac43` (2026-09-05) | `atomic_redteam/defaults` (commit 2) |
+| pyminizip (emu dep) | 0.2.6 (sdist only - built with gcc + python3.10-dev) | `caldera_server/tasks` |
+| Node.js (UI build only) | 22.23.5 (sha256 from nodejs.org `SHASUMS256.txt`) | `caldera_server/defaults` (`caldera_node_*`) |
+| magma UI npm deps | magma's own `package-lock.json` (`npm ci`) | pinned by the magma submodule SHA |
+| invoke-atomicredteam | 2.3.0 | `atomic_redteam/defaults` |
+| powershell-yaml (its dependency) | 0.4.12 | `atomic_redteam/defaults` |
+| atomic-red-team atomics | commit SHA `388942adbd9641f4dfdcf079d7efe9a75ec0ac43` (2026-09-05) | `atomic_redteam/defaults` |
 
 Every pin is verified live at build time (GitHub releases API / PSGallery
 API) and re-asserted on install: the clone is checked out at the tag AND the
@@ -123,6 +134,16 @@ the VM's `conf/local.yml` at install).
 
 - 8GB RAM / 2 cpu / >= 20GB free disk on the EMULATION machine (already set
   in every provider file)
+- Internet access from the EMULATION machine (github.com, pypi.org,
+  nodejs.org, registry.npmjs.org) and from the windows machines (github.com,
+  PowerShell Gallery). On the first start Caldera's emu and atomic plugins
+  clone their content repositories, so the UI can take a few minutes to
+  answer (the install waits up to 10 min, `caldera_health_retries`).
+- The emu plugin's non-redistributable payloads (AdFind, PsExec, ...) are NOT
+  downloaded: upstream fetches them with `plugins/emu/download_payloads.sh`
+  from third-party sites without version pins. Run it yourself on the
+  EMULATION machine (as the `caldera` user, in `/opt/caldera/plugins/emu`)
+  if an emulation plan needs them.
 - On ludus prepare template :
 ```
 ludus templates add -d ubuntu-22.04-x64-server
@@ -138,11 +159,21 @@ instance_id> install_extension emulation
 ## Uninstall
 
 Per-host teardown of everything the extension puts ON THE ENDPOINTS plus the
-server - `ansible/uninstall.yml` (2 plays, mirrors install.yml):
+server - `ansible/uninstall.yml` (2 plays, mirrors install.yml). Run it from
+`extensions/emulation/ansible` with the same inventories goad passes to the
+install (`run_extension` in `goad/provisioner/ansible/ansible.py`): the lab
+inventory, the instance inventory, the extension inventory and
+`globalsettings.ini` (add the `<ext>_inventory` of any other enabled
+extension too):
 
 ```
-ansible-playbook -i <workspace>/<instance>/emulation_inventory \
-  extensions/emulation/ansible/uninstall.yml
+cd extensions/emulation/ansible
+ansible-playbook \
+  -i ../../../ad/<lab>/data/inventory \
+  -i ../../../workspace/<instance_id>/inventory \
+  -i ../../../workspace/<instance_id>/emulation_inventory \
+  -i ../../../globalsettings.ini \
+  uninstall.yml
 ```
 
 (The goad CLI on main has no `uninstall_extension` command - `goad.py` only
@@ -152,13 +183,14 @@ enabled list.)
 
 Removes: on the agents, `C:\Tools\AtomicRedTeam` (atomics + installers), the
 `invoke-atomicredteam` module at the pinned version (`Uninstall-Module
--AllUsers`), the AllUsers profile import line, and the two Windows Defender
+-AllUsers`), the AllUsers profile lines it wrote, and the two Windows Defender
 `ExclusionPath` entries (`Remove-MpPreference`, ONLY the ART paths). On the
-emulation VM, the caldera systemd unit + service, `/opt/caldera`, the
-`/etc/emulation` state dir, the ufw 8888 rule (ufw-active hosts only), and
+emulation VM, the caldera systemd unit + service, `/opt/caldera`, the Node.js
+used for the UI build (`/opt/node*`), the `/etc/emulation` state dir, the ufw 8888 rule (ufw-active hosts only), and
 the `caldera` service user.
 
-Kept on purpose: git itself (a system tool), every other Defender setting
+Kept on purpose: git itself (a system tool), the powershell-yaml module (a
+shared dependency), every other Defender setting
 (realtime/ASR/PPL stay exactly as GOAD core configured them), and the
 emulation VM machine itself (destroy it through goad/the provider when you
 want the host gone). Caldera operation reports live in `/opt/caldera/data`

@@ -26,12 +26,22 @@
       pinned/CHECK (commit SHA); defender_excl=set/CHECK - the ART path
       exclusions. hosts reported: {{ emulation_rollup | default([]) | length }}
 
+# A host is unhealthy when ANY of its checks is not in the healthy state
+# (module ok, atomics present + populated, exclusions set). Counted per host
+# name: de-duplicating filters (union, unique) would merge two hosts whose
+# reports happen to be identical.
 - name: Count unhealthy endpoints (roll-up grade)
   ansible.builtin.set_fact:
     emulation_rollup_unhealthy: >-
-      {{ emulation_rollup | default([])
-         | map('extract', hostvars, ['emulation_health_report'])
-         | selectattr('art_module', 'equalto', 'MISSING') | list | length }}
+      {%- set bad = [] -%}
+      {%- for host in emulation_rollup | default([]) -%}
+      {%-   set r = hostvars[host].emulation_health_report -%}
+      {%-   if r.art_module != 'ok' or r.atomics_dir != 'present'
+               or r.atomics_count != 'populated' or r.defender_exclusions != 'set' -%}
+      {%-     set _ = bad.append(host) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ bad | length }}
 
 - name: Count hosts with a drifted atomics pin
   ansible.builtin.set_fact:
@@ -51,7 +61,8 @@
 - name: Warn about unhealthy endpoints (non-fatal, per design)
   ansible.builtin.debug:
     msg: >-
-      {{ emulation_rollup_unhealthy }} endpoint(s) missing the ART module and
+      {{ emulation_rollup_unhealthy }} endpoint(s) with a missing module,
+      missing/empty atomics or missing Defender exclusions, and
       {{ emulation_rollup_pin_drift }} endpoint(s) with a drifted atomics SHA
       - see the table above; a lagging host usually just needs a re-run.
   when:

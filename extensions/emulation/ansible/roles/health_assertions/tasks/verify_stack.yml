@@ -11,9 +11,11 @@
 
 - name: Verify the Caldera API (authenticated)
   block:
+    # /api/v2/health answers 401 without a valid KEY header and 200 with
+    # one. (GET /api/rest is not usable: it parses a JSON body -> 500.)
     - name: Poll the Caldera API until it answers with the red api key
       ansible.builtin.uri:
-        url: "http://localhost:{{ caldera_port }}/api/rest"
+        url: "http://localhost:{{ caldera_port }}/api/v2/health"
         method: GET
         headers:
           KEY: "{{ caldera_api_key_red }}"
@@ -24,7 +26,7 @@
       delay: 5
       timeout: 15
 
-    - name: Assert the API returned the plugin list
+    - name: Assert the API accepted the red api key
       ansible.builtin.assert:
         that:
           - caldera_api_poll.status == 200
@@ -55,39 +57,43 @@
 
 - name: Verify the emulation-critical plugins are loaded
   block:
-    - name: Read the Caldera config through the API (plugin list)
+    # /api/v2/health returns {"plugins": [{"name", "enabled", ...}, ...]}
+    # (a LIST of objects, so membership has to be tested on the names)
+    - name: Read the loaded plugins through the API
       ansible.builtin.uri:
-        url: "http://localhost:{{ caldera_port }}/api/v2/plugins"
+        url: "http://localhost:{{ caldera_port }}/api/v2/health"
         method: GET
         headers:
           KEY: "{{ caldera_api_key_red }}"
         status_code: 200
         return_content: yes
-      register: caldera_plugins_api
+      register: caldera_health_api
       retries: 3
       delay: 5
-      until: caldera_plugins_api.status == 200
+      until: caldera_health_api.status == 200
+
+    - name: Collect the names of the enabled plugins
+      ansible.builtin.set_fact:
+        caldera_enabled_plugins: "{{ caldera_health_api.json.plugins | selectattr('enabled') | map(attribute='name') | list }}"
 
     # emu / sandcat / atomic are the reason this extension exists - a server
     # that came up without them is a failed install even if the UI is green.
-    - name: Assert emu + sandcat + atomic are all loaded
+    - name: Assert emu + sandcat + atomic are all enabled
       ansible.builtin.assert:
         that:
-          - "'emu' in caldera_plugins_api.json | default({})"
-          - "'sandcat' in caldera_plugins_api.json | default({})"
-          - "'atomic' in caldera_plugins_api.json | default({})"
+          - "['emu', 'sandcat', 'atomic'] | difference(caldera_enabled_plugins) | length == 0"
         fail_msg: >-
-          Caldera is up but the emulation plugins are not all loaded
-          (emu={{ caldera_plugins_api.json | default({}) | ternary(caldera_plugins_api.json, {}) | select('in', ['emu']) | list | length > 0 }}).
+          Caldera is up but these emulation plugins are not enabled:
+          {{ ['emu', 'sandcat', 'atomic'] | difference(caldera_enabled_plugins) | join(', ') }}.
           Check conf/local.yml's plugins list and the journalctl output.
-        success_msg: "emu + sandcat + atomic plugins all loaded."
+        success_msg: "emu + sandcat + atomic plugins all enabled."
 
   rescue:
     - name: Report the plugin verification failure
       ansible.builtin.fail:
         msg: |
           The emulation-critical plugins did not all load.
-          API response: {{ caldera_plugins_api.content | default('unavailable') | truncate(800) }}
+          API response: {{ caldera_health_api.content | default('unavailable') | truncate(800) }}
           Fix: check {{ caldera_install_dir | default('/opt/caldera') }}/conf/local.yml
           (plugins list) and journalctl -u caldera for module import errors,
           then re-run the install.

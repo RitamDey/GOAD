@@ -36,8 +36,8 @@ caldera_user: caldera
 #          this is the day-one gotcha, see the README port matrix.
 caldera_port: 8888
 
-# Lab credentials (this is a lab - aligned with the stock changeme convention
-# of the elk / elastic-edr extensions). Written into conf/local.yml, which
+# Lab credentials (this is a lab - same changeme convention as the elk
+# extension). Written into conf/local.yml, which
 # Caldera reads INSTEAD of generating its own secure config (server.py's
 # ensure_local_config() only creates local.yml when it does not exist, so a
 # pre-seeded file wins and the values stay deterministic).
@@ -51,12 +51,11 @@ caldera_api_key_blue: "BLUEADMIN123"
 caldera_crypt_salt: "REPLACE_WITH_RANDOM_VALUE"
 caldera_encryption_key: "ADMIN123"
 
-# Plugins enabled in local.yml. The four stock ones plus the three this
-# extension exists for (emu = CTID emulation plans, sandcat = the agent,
-# atomic = ART technique import). NOTE: magma (the reporting UI) needs a
-# node build step and is left out deliberately; everything else in the
-# 5.3.0 plugin set is either a submodule-less python plugin or already
-# covered by default.yml's list.
+# Plugins enabled in conf/local.yml: the stock default.yml list plus emu
+# (emu, sandcat and atomic are the plugins this extension exists for).
+# magma (the Vue UI) is not listed on purpose: Caldera 5.3.0 always enables
+# it (app/service/app_svc.py: `plugin.name in plugins or plugin.name ==
+# 'magma'`). It does need its dist/ built - see the node vars below.
 caldera_plugins:
   - access
   - atomic
@@ -70,6 +69,39 @@ caldera_plugins:
   - stockpile
   - training
 
+# conf/local.yml = the release's own conf/default.yml + these overrides.
+# Caldera 5.3.0 reads ONLY conf/local.yml when started with `-E local`
+# (server.py: apply_config('main', strip_yml(conf/<env>.yml)), no merge with
+# default.yml), and the contacts read keys such as app.contact.tcp at start,
+# so every stock key has to be present - hence copy-then-override instead of
+# a hand-written template. `port` is added as an integer in tasks/config.yml
+# (a templated value nested in a var would come out as the string '8888').
+caldera_config_overrides:
+  users:
+    red:
+      red: "{{ caldera_red_password }}"
+    blue:
+      blue: "{{ caldera_blue_password }}"
+  api_key_red: "{{ caldera_api_key_red }}"
+  api_key_blue: "{{ caldera_api_key_blue }}"
+  crypt_salt: "{{ caldera_crypt_salt }}"
+  encryption_key: "{{ caldera_encryption_key }}"
+  host: 0.0.0.0
+  app.contact.http: "http://0.0.0.0:{{ caldera_port }}"
+  plugins: "{{ caldera_plugins }}"
+
+# Node.js for the one-time build of the magma (Vue) UI. Caldera 5.3.0 cannot
+# start without plugins/magma/dist (app/api/rest_api.py add_static on
+# plugins/magma/dist/assets) and its README asks for Node v16+. Pinned
+# official tarball; sha256 copied from
+# https://nodejs.org/dist/v22.23.5/SHASUMS256.txt and re-checked by hashing
+# the downloaded file.
+caldera_node_version: "22.23.5"
+caldera_node_sha256: "cdeb8670a0c81f51b4dc4ac61919f9b1ad917b304bf8221eb939570663d240f8"
+caldera_node_url: "https://nodejs.org/dist/v{{ caldera_node_version }}/node-v{{ caldera_node_version }}-linux-x64.tar.xz"
+caldera_node_root: /opt
+caldera_node_dir: "{{ caldera_node_root }}/node"
+
 # Systemd
 caldera_service_name: caldera
 caldera_systemd_dir: /etc/systemd/system
@@ -77,6 +109,8 @@ caldera_systemd_dir: /etc/systemd/system
 # State directory (pin records for idempotent re-runs)
 state_dir: /etc/emulation
 
-# Health-check tuning
-caldera_health_retries: 30        # x5s = 2.5 min for the UI to answer 200
+# Health-check tuning. The first start is slow: the emu and atomic plugins
+# git-clone their content repos while enabling (plugins/emu/hook.py,
+# plugins/atomic/app/atomic_svc.py).
+caldera_health_retries: 120       # x5s = 10 min for the UI to answer 200
 caldera_health_delay: 5

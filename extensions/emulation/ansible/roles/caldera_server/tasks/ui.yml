@@ -1,0 +1,47 @@
+# caldera_server : build the magma (Vue) UI once
+#
+# Caldera 5.3.0 registers a static route on plugins/magma/dist/assets and
+# renders plugins/magma/dist/index.html for the UI (app/api/rest_api.py), so
+# the dist/ folder has to exist before the service starts. This is what
+# `server.py --build` does (npm install + npm run build in plugins/magma);
+# doing it here once keeps the service start fast and uses `npm ci` against
+# magma's committed package-lock.json for a reproducible install.
+
+- name: Download the pinned Node.js tarball (sha256-verified)
+  ansible.builtin.get_url:
+    url: "{{ caldera_node_url }}"
+    dest: "{{ caldera_node_root }}/node-v{{ caldera_node_version }}-linux-x64.tar.xz"
+    checksum: "sha256:{{ caldera_node_sha256 }}"
+    mode: "0644"
+
+- name: Unpack Node.js
+  ansible.builtin.unarchive:
+    src: "{{ caldera_node_root }}/node-v{{ caldera_node_version }}-linux-x64.tar.xz"
+    dest: "{{ caldera_node_root }}"
+    remote_src: yes
+    creates: "{{ caldera_node_root }}/node-v{{ caldera_node_version }}-linux-x64/bin/node"
+
+- name: Point the stable Node.js path at the pinned version
+  ansible.builtin.file:
+    src: "{{ caldera_node_root }}/node-v{{ caldera_node_version }}-linux-x64"
+    dest: "{{ caldera_node_dir }}"
+    state: link
+
+- name: Install the magma build dependencies (npm ci, lockfile-exact)
+  ansible.builtin.command:
+    cmd: "{{ caldera_node_dir }}/bin/npm ci --no-audit --no-fund"
+    chdir: "{{ caldera_install_dir }}/plugins/magma"
+    creates: "{{ caldera_install_dir }}/plugins/magma/dist/index.html"
+  environment:
+    PATH: "{{ caldera_node_dir }}/bin:{{ ansible_env.PATH | default('/usr/local/bin:/usr/bin:/bin') }}"
+  become_user: "{{ caldera_user }}"
+
+- name: Build the magma UI (npm run build -> plugins/magma/dist)
+  ansible.builtin.command:
+    cmd: "{{ caldera_node_dir }}/bin/npm run build"
+    chdir: "{{ caldera_install_dir }}/plugins/magma"
+    creates: "{{ caldera_install_dir }}/plugins/magma/dist/index.html"
+  environment:
+    PATH: "{{ caldera_node_dir }}/bin:{{ ansible_env.PATH | default('/usr/local/bin:/usr/bin:/bin') }}"
+  become_user: "{{ caldera_user }}"
+  notify: Restart caldera
