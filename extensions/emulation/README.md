@@ -82,7 +82,9 @@ emulation VM is allowed.
 | magma UI npm deps | magma's own `package-lock.json` (`npm ci`) | pinned by the magma submodule SHA |
 | invoke-atomicredteam | 2.3.0 | `atomic_redteam/defaults` |
 | powershell-yaml (its dependency) | 0.4.12 | `atomic_redteam/defaults` |
-| atomic-red-team atomics | commit SHA `388942adbd9641f4dfdcf079d7efe9a75ec0ac43` (2026-09-05) | `atomic_redteam/defaults` |
+| atomic-red-team atomics (windows) | commit SHA `388942adbd9641f4dfdcf079d7efe9a75ec0ac43` (2026-09-05) | `atomic_redteam/defaults` |
+| emu content (adversary-emulation-plans, server) | commit SHA `4467a6eed6e67d25009704130e1d27d1a8007f57` (2025-05-28) | `caldera_server/defaults` (`caldera_emu_content_sha`) |
+| atomic content (atomic-red-team, server) | commit SHA `388942adbd9641f4dfdcf079d7efe9a75ec0ac43` (2026-09-05, = windows pin) | `caldera_server/defaults` (`caldera_atomic_content_sha`) |
 
 Every pin is verified live at build time (GitHub releases API / PSGallery
 API) and re-asserted on install: the clone is checked out at the tag AND the
@@ -152,9 +154,13 @@ the VM's `conf/local.yml` at install).
   nodejs.org, registry.npmjs.org, plus the third-party sites in
   `download_payloads.sh`) and from the windows machines (github.com,
   PowerShell Gallery, and the EMULATION machine on 8888 for the Sandcat
-  download + callback). On the first start Caldera's emu and atomic plugins
-  clone their content repositories, so the UI can take a few minutes to
-  answer (the install waits up to 10 min, `caldera_health_retries`).
+  download + callback). Before the first start the role pre-clones the emu
+  and atomic plugin content (adversary-emulation-plans, atomic-red-team) at
+  the pinned SHAs above, so the plugins skip their own unpinned master clone;
+  the plugins then populate/decrypt that content on the first start, so the
+  UI can take a few minutes to answer (the install waits up to 10 min,
+  `caldera_health_retries`). Bumping a content pin means removing the
+  plugin's `data/<repo>` dir on the VM and re-running.
 - The emu plugin's non-redistributable payloads (AdFind, PsExec, putty,
   mimikatz, ...) ARE fetched after the server is up, best-effort, via
   `plugins/emu/download_payloads.sh` (`caldera_fetch_emu_payloads: true`).
@@ -195,14 +201,15 @@ ansible-playbook \
   uninstall.yml
 ```
 
-(The goad CLI on main has no `uninstall_extension` command - `goad.py` only
-calls `run_extension` with `install=True` - so the playbook IS the supported
-teardown path. `disable_extension emulation` drops it from the instance's
-enabled list.)
+(The goad CLI has no `uninstall_extension` command - `goad.py` only calls
+`run_extension` with `install=True` - so the playbook IS the supported
+teardown path. There is no `disable_extension` command either; to drop
+emulation from the instance's enabled list, re-run `set_extensions` with the
+extensions you want to keep.)
 
 Removes: on the agents, `C:\Tools\AtomicRedTeam` (atomics + installers), the
-`invoke-atomicredteam` module at the pinned version (`Uninstall-Module
--AllUsers`), the AllUsers profile lines it wrote, the Sandcat agent (the
+`invoke-atomicredteam` module at the pinned version (`win_psmodule
+state=absent`), the AllUsers profile lines it wrote, the Sandcat agent (the
 `GOAD-Sandcat` scheduled task, the running `sandcat` process and
 `C:\Tools\Sandcat`), and the Windows Defender `ExclusionPath` entries
 (`Remove-MpPreference`, ONLY the ART and sandcat paths). On the emulation VM,

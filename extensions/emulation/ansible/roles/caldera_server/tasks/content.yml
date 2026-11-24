@@ -1,0 +1,43 @@
+# caldera_server : pin the emu + atomic plugin CONTENT at fixed SHAs
+#
+# The emu and atomic plugins clone their content repos (adversary-emulation
+# plans / atomic-red-team atomics) from master on first start, but only if the
+# target data dir is empty (plugins/emu/app/emu_svc.py clone_repo,
+# plugins/atomic/app/atomic_svc.py clone_atomic_red_team_repo). Pre-cloning
+# both at a pinned SHA here - before the service starts - makes the plugins
+# find a populated dir and skip their own unpinned clone, so the whole lab is
+# reproducible (not just the Caldera code + the windows ART atomics).
+#
+# A shallow fetch-by-SHA keeps this light (GitHub serves any commit SHA). Runs
+# as the caldera user: the dirs live under the caldera-owned install tree, and
+# git refuses to operate as root in a repo owned by another user.
+#
+# Idempotent via `creates` on <dir>/.git (first install only). Bumping a pin
+# means removing the data dir and re-running.
+
+- name: Pre-clone the Caldera content repos at the pinned SHAs
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      git init -q "{{ item.dir }}"
+      cd "{{ item.dir }}"
+      git remote add origin "{{ item.url }}" 2>/dev/null || git remote set-url origin "{{ item.url }}"
+      git fetch -q --depth 1 origin "{{ item.sha }}"
+      git checkout -q --detach FETCH_HEAD
+    creates: "{{ item.dir }}/.git"
+  become_user: "{{ caldera_user }}"
+  loop: "{{ caldera_content_repos }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Assert the content repos are at the pinned SHA
+  ansible.builtin.command: git rev-parse HEAD
+  args:
+    chdir: "{{ item.dir }}"
+  become_user: "{{ caldera_user }}"
+  changed_when: false
+  register: caldera_content_heads
+  failed_when: caldera_content_heads.stdout | trim != item.sha
+  loop: "{{ caldera_content_repos }}"
+  loop_control:
+    label: "{{ item.name }}"

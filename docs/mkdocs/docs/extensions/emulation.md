@@ -18,7 +18,10 @@
 - A live **Sandcat agent** on every domain windows machine (boot scheduled
   task, started at install) that checks in to the Caldera server
 
-The first Caldera start clones the emu and atomic content repositories, so
+The emu and atomic plugin content (adversary-emulation-plans,
+atomic-red-team) is pre-cloned at pinned SHAs before the first start, so the
+whole lab is reproducible (not just the Caldera code). The first start
+populates/decrypts that content, so
 the UI can take a few minutes to come up (the install waits up to 10 min).
 The emu plugin's non-redistributable payloads are fetched best-effort after
 the server is up (`caldera_fetch_emu_payloads`, see the extension README).

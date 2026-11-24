@@ -19,17 +19,19 @@
 # The plays have no roles, so the role defaults are loaded with vars_files
 # (paths, versions, service names stay in one place).
 #
-# (on main the goad CLI has no uninstall_extension command - goad.py only
-# ever calls run_extension with install=True, so this playbook is the
-# supported teardown path; `disable_extension emulation` removes it from
-# the instance's enabled list.)
+# (the goad CLI has no uninstall_extension command - goad.py only ever calls
+# run_extension with install=True, so this playbook is the supported teardown
+# path. To drop emulation from the instance's enabled list afterwards, re-run
+# `set_extensions <the extensions you want to keep>` - there is no
+# disable_extension CLI command.)
 #
 # What IS removed:
 #   - on the agents ([emulation_agents] = [domain]):
 #       the ART install root C:\Tools\AtomicRedTeam (atomics checkout +
 #       module installer leftovers), the invoke-atomicredteam module
-#       (Uninstall-Package at the pinned version, service-presence guarded),
-#       the AllUsers profile import line, the Windows Defender path
+#       (win_psmodule state=absent at the pinned version; powershell-yaml is
+#       kept as a shared dependency), the Sandcat agent, the AllUsers profile
+#       import line, the Windows Defender path
 #       exclusions for the ART dirs (Remove-MpPreference -ExclusionPath,
 #       ONLY the two paths this extension added), the git installer
 #       leftovers
@@ -99,18 +101,17 @@
       when: art_root_stat.stat.exists | default(false)
 
     # ---- invoke-atomicredteam module -----------------------------------------
+    # win_psmodule (the module the install uses) handles removal cleanly:
+    # Uninstall-Module has no -AllUsers parameter, and win_powershell returns
+    # `output` not `stdout`, so the old hand-rolled task failed on every host
+    # (a changed_when on a missing key fails the task even with
+    # failed_when:false, which then stopped the profile/exclusion cleanup
+    # below). powershell-yaml is left in place (shared dependency).
     - name: Uninstall the invoke-atomicredteam module (pinned version)
-      ansible.windows.win_powershell:
-        script: |
-          $m = Get-Module -ListAvailable -Name invoke-atomicredteam |
-               Where-Object { $_.Version -eq '{{ art_module_version }}' }
-          if ($m) {
-            Uninstall-Module -Name invoke-atomicredteam -RequiredVersion {{ art_module_version }} -AllUsers -Force
-            Write-Output "module-removed"
-          } else { Write-Output "module-absent" }
-      register: art_module_uninstall
-      failed_when: false
-      changed_when: "'module-removed' in art_module_uninstall.stdout"
+      community.windows.win_psmodule:
+        name: invoke-atomicredteam
+        required_version: "{{ art_module_version }}"
+        state: absent
 
     # ---- AllUsers profile import line ------------------------------------------
     # drops the lines the install marked with art_profile_marker, plus the
@@ -135,29 +136,29 @@
       failed_when: false
 
     # ---- Defender path exclusions (ONLY the two ART paths) ---------------------
+    # win_shell (returns stdout) - win_powershell returns `output`, so the
+    # changed_when here would reference a missing key and fail the task.
     - name: Remove the ART Windows Defender path exclusions
-      ansible.windows.win_powershell:
-        script: |
-          $artPaths = @('{{ art_install_root }}', '{{ art_atomics_dir }}')
-          $current = (Get-MpPreference).ExclusionPath
-          $removed = @()
-          foreach ($p in $artPaths) {
-            if ($current -contains $p) {
-              Remove-MpPreference -ExclusionPath $p
-              $removed += $p
-            }
+      ansible.windows.win_shell: |
+        $artPaths = @('{{ art_install_root }}', '{{ art_atomics_dir }}')
+        $current = (Get-MpPreference).ExclusionPath
+        $removed = @()
+        foreach ($p in $artPaths) {
+          if ($current -contains $p) {
+            Remove-MpPreference -ExclusionPath $p
+            $removed += $p
           }
-          Write-Output ("removed=" + ($removed -join ','))
+        }
+        Write-Output ("removed=" + ($removed -join ','))
       register: art_exclusion_removal
       failed_when: false
       changed_when: "'removed=' in art_exclusion_removal.stdout and art_exclusion_removal.stdout != 'removed='"
 
     - name: Verify the ART exclusions are gone (post-check)
-      ansible.windows.win_powershell:
-        script: |
-          $current = (Get-MpPreference).ExclusionPath
-          $left = $current | Where-Object { $_ -like '*AtomicRedTeam*' }
-          Write-Output ("leftover=" + ($left -join ','))
+      ansible.windows.win_shell: |
+        $current = (Get-MpPreference).ExclusionPath
+        $left = $current | Where-Object { $_ -like '*AtomicRedTeam*' }
+        Write-Output ("leftover=" + ($left -join ','))
       changed_when: false
       failed_when: false
 
