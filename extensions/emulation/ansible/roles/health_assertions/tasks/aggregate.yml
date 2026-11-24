@@ -68,3 +68,17 @@
   when:
     - (emulation_rollup | default([])) | length > 0
     - (emulation_rollup_unhealthy | default(0)) | int > 0 or (emulation_rollup_pin_drift | default(0)) | int > 0
+
+# A single lagging host only warns (above), but a fleet where EVERY endpoint
+# is unhealthy is a real failure (wrong server URL, PSGallery unreachable,
+# Defender quarantining the module, ...) and should stop the run loudly.
+- name: Fail when no endpoint is healthy at all
+  ansible.builtin.fail:
+    msg: >-
+      All {{ emulation_rollup | length }} endpoint(s) are unhealthy (none have
+      the ART module + populated atomics + Defender exclusions). This is a
+      fleet-wide failure, not a lagging host - check the table above and the
+      verify_agents output, fix the common cause, then re-run.
+  when:
+    - (emulation_rollup | default([])) | length > 0
+    - (emulation_rollup_unhealthy | default(0)) | int == (emulation_rollup | length)
