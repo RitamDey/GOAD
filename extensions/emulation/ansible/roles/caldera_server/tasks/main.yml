@@ -4,22 +4,26 @@
 # assertions) -> venv with the TAG's OWN requirements.txt (master drifts: its
 # aiohttp pin already differs from 5.3.0's) -> pre-seeded conf/local.yml (so
 # ensure_local_config() never generates random credentials) -> systemd unit
-# -> wait-for-200 health check -> access-info debug + pin records.
+# -> magma UI build (pinned Node.js) -> wait-for-200 health check ->
+# access-info debug + pin records.
 #
-# Caldera 5.x is pure python at runtime: server.py is the entrypoint and the
-# go toolchain is only needed to BUILD sandcat payloads from source. This
-# role installs the prebuilt sandcat binaries that ship in the sandcat
-# submodule (payloads/sandcat.go-windows et al), so no golang install here.
+# Caldera 5.x is python at runtime: server.py is the entrypoint and the go
+# toolchain is only needed to BUILD sandcat payloads from source. The sandcat
+# submodule ships prebuilt payloads (payloads/sandcat.go-windows et al), so
+# no golang install here. Node.js is only used once, to build the magma UI.
 
 # ---- OS dependencies --------------------------------------------------------
 - name: Install Caldera OS dependencies
   ansible.builtin.apt:
     name:
       - git
+      - acl               # lets become_user switch to the unprivileged caldera user
       - python3.10
       - python3.10-venv
       - python3-pip
-      - zlib1g            # emu plugin: pyminizip dependency (libz)
+      - python3.10-dev    # pyminizip 0.2.6 is sdist-only on PyPI: C build
+      - gcc               # (it bundles its own zlib 1.2.11 sources)
+      - xz-utils          # unpack the Node.js .tar.xz
     state: present
     update_cache: yes
     cache_valid_time: 3600
@@ -30,10 +34,30 @@
     name: "{{ caldera_user }}"
     shell: /usr/sbin/nologin
     home: "{{ caldera_install_dir }}"
+    # no skeleton files: the git clone below needs an empty directory
+    create_home: no
     system: yes
     comment: "Caldera adversary emulation server (GOAD emulation extension)"
 
+- name: Create the state dir
+  ansible.builtin.file:
+    path: "{{ state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 # ---- Clone at the pinned release --------------------------------------------
+# The caldera user cannot create a folder in /opt, so create the (empty)
+# install dir for it first; git clones into an existing empty directory.
+- name: Create the install dir
+  ansible.builtin.file:
+    path: "{{ caldera_install_dir }}"
+    state: directory
+    owner: "{{ caldera_user }}"
+    group: "{{ caldera_user }}"
+    mode: "0755"
+
 - name: Check if the pinned checkout already exists
   ansible.builtin.stat:
     path: "{{ caldera_install_dir }}/server.py"
@@ -70,8 +94,8 @@
     label: "{{ item.key }}"
   changed_when: false
   register: caldera_submodule_heads
-  failed_when: item.value != caldera_submodule_heads.results[ansible_loop.index0].stdout | trim
-  when: not caldera_checkout.stat.exists or caldera_clone is changed
+  # inside a loop the registered var holds the CURRENT item's result
+  failed_when: caldera_submodule_heads.stdout | trim != item.value
 
 - name: Own the install tree
   ansible.builtin.file:
@@ -87,6 +111,8 @@
     cmd: "{{ caldera_python_bin }} -m venv venv"
     chdir: "{{ caldera_install_dir }}"
     creates: "{{ caldera_install_dir }}/venv/bin/activate"
+  # same user as the pip tasks below, or they cannot write into the venv
+  become_user: "{{ caldera_user }}"
 
 - name: Install the 5.3.0 requirements (exact pins, from the checkout)
   ansible.builtin.pip:
@@ -102,18 +128,12 @@
     virtualenv_python: "{{ caldera_python_bin }}"
   become_user: "{{ caldera_user }}"
 
-# ---- Pre-seeded conf/local.yml ------------------------------------------------
-# server.py: ensure_local_config() only writes conf/local.yml when ABSENT.
-# Shipping our own file makes every credential/port deterministic and pins
-# the plugin set (emu + sandcat + atomic included).
-- name: Deploy the pre-seeded local.yml
-  ansible.builtin.template:
-    src: local.yml.j2
-    dest: "{{ caldera_install_dir }}/conf/local.yml"
-    owner: "{{ caldera_user }}"
-    group: "{{ caldera_user }}"
-    mode: "0640"
-  notify: Restart caldera
+# ---- magma UI build + conf/local.yml ---------------------------------------------
+- name: Build the magma UI
+  ansible.builtin.include_tasks: ui.yml
+
+- name: Deploy conf/local.yml
+  ansible.builtin.include_tasks: config.yml
 
 # ---- Firewall: open the UI / agent-callback port -------------------------------
 # 8888 is BOTH the UI port and the Sandcat http contact. Every domain windows
@@ -140,6 +160,11 @@
     mode: "0644"
   notify: Restart caldera
 
+# apply a changed unit/config/UI now, so the health checks below (and the
+# health_assertions stage) test the process that will keep running
+- name: Restart caldera now if the unit, config or UI changed
+  ansible.builtin.meta: flush_handlers
+
 - name: Enable + start the caldera service
   ansible.builtin.systemd:
     name: "{{ caldera_service_name }}"
@@ -160,9 +185,11 @@
       delay: "{{ caldera_health_delay }}"
       timeout: 10
 
+    # /api/v2/health needs the api key (401 without) and lists the plugins.
+    # (GET /api/rest is not a probe: it parses a JSON body and answers 500.)
     - name: Assert the API answers with the lab api key
       ansible.builtin.uri:
-        url: "http://localhost:{{ caldera_port }}/api/rest"
+        url: "http://localhost:{{ caldera_port }}/api/v2/health"
         method: GET
         headers:
           KEY: "{{ caldera_api_key_red }}"

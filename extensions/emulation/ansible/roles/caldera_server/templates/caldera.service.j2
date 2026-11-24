@@ -12,6 +12,11 @@ WorkingDirectory={{ caldera_install_dir }}
 ExecStart={{ caldera_install_dir }}/venv/bin/python server.py -E local
 Restart=on-failure
 RestartSec=10
+# Caldera only shuts down cleanly on SIGINT (server.py catches
+# KeyboardInterrupt and runs app_svc.teardown(), which saves the object store
+# and writes reports). systemd's default SIGTERM skips all of that.
+KillSignal=SIGINT
+TimeoutStopSec=60
 
 # Hardening: caldera needs to write its own data dirs (data/, payloads)
 # inside the install tree, so no ProtectSystem=strict - the write mask keeps
