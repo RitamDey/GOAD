@@ -69,6 +69,9 @@
   ansible.builtin.command: git rev-parse HEAD
   args:
     chdir: "{{ caldera_install_dir }}"
+  # the checkout is owned by caldera; running git as root trips git's
+  # safe.directory check ("detected dubious ownership") and returns nothing
+  become_user: "{{ caldera_user }}"
   changed_when: false
   failed_when: false
   register: caldera_existing_head
@@ -101,6 +104,8 @@
   ansible.builtin.command: git rev-parse HEAD
   args:
     chdir: "{{ caldera_install_dir }}"
+  # run as the tree's owner (see above - root trips safe.directory)
+  become_user: "{{ caldera_user }}"
   changed_when: false
   register: caldera_head
   failed_when: caldera_head.stdout | trim != caldera_commit_sha
@@ -109,6 +114,7 @@
   ansible.builtin.command: git rev-parse HEAD
   args:
     chdir: "{{ caldera_install_dir }}/{{ item.key }}"
+  become_user: "{{ caldera_user }}"
   loop: "{{ caldera_submodule_shas | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
@@ -154,6 +160,11 @@
 
 - name: Deploy conf/local.yml
   ansible.builtin.include_tasks: config.yml
+
+# ---- Pin the plugin content (before the first start, so the plugins skip
+#      their own unpinned clone) ---------------------------------------------------
+- name: Pin the emu + atomic plugin content
+  ansible.builtin.include_tasks: content.yml
 
 # ---- Firewall: open the UI / agent-callback port -------------------------------
 # 8888 is BOTH the UI port and the Sandcat http contact. Every domain windows
@@ -268,7 +279,7 @@
     content: |
       caldera_tag={{ caldera_version }}
       caldera_commit={{ caldera_commit_sha }}
-      {% for name, sha in caldera_submodule_shas | dict2items %}
+      {% for name, sha in caldera_submodule_shas.items() %}
       {{ name }}={{ sha }}
       {% endfor %}
     owner: root
