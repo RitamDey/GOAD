@@ -31,10 +31,10 @@
 #       module installer leftovers), the invoke-atomicredteam module
 #       (win_psmodule state=absent at the pinned version; powershell-yaml is
 #       kept as a shared dependency), the Sandcat agent, the AllUsers profile
-#       import line, the Windows Defender path
-#       exclusions for the ART dirs (Remove-MpPreference -ExclusionPath,
-#       ONLY the two paths this extension added), the git installer
-#       leftovers
+#       import line, the Windows Defender path exclusions THIS extension
+#       added (the ART + sandcat dirs, as recorded by the install in the
+#       registry marker HKLM:\SOFTWARE\GOAD\Emulation - issue #62), and the
+#       marker itself, the git installer leftovers
 #   - on the emulation VM ([emulation_server]):
 #       the caldera systemd unit + service, /opt/caldera (venv + clone +
 #       conf), the /etc/emulation state dir, the ufw 8888 rule (only if ufw
@@ -43,8 +43,9 @@
 # What is NOT removed (deliberate):
 #   - git itself (system-wide tool; other things may use it)
 #   - the powershell-yaml module (shared dependency, other modules may use it)
-#   - anything Defender/GOAD-core configured (realtime, ASR, PPL) - only the
-#     two ART path exclusions are removed
+#   - anything Defender/GOAD-core configured (realtime, ASR, PPL), and any
+#     exclusion for the ART/sandcat paths that existed BEFORE the install
+#     (not in the ownership marker) - only exclusions the extension added go
 #   - the ART C:\Tools\AtomicRedTeam parent when other tooling lives there
 #     (only the AtomicRedTeam subfolder is removed)
 #   - any Caldera operation/agent history - the whole server dir goes; if
@@ -76,17 +77,6 @@
       ansible.windows.win_file:
         path: "{{ sandcat_install_dir }}"
         state: absent
-
-    - name: Remove the sandcat Windows Defender path exclusion
-      ansible.windows.win_shell: |
-        $p = '{{ sandcat_install_dir }}'
-        if ((Get-MpPreference).ExclusionPath -contains $p) {
-          Remove-MpPreference -ExclusionPath $p
-          Write-Output 'removed'
-        } else { Write-Output 'absent' }
-      register: sandcat_excl_removal
-      changed_when: "'removed' in sandcat_excl_removal.stdout"
-      failed_when: false
 
     # ---- ART install root ----------------------------------------------------
     - name: Check if the ART install root exists
@@ -135,32 +125,62 @@
       changed_when: "'profile-cleaned' in art_profile_cleanup.stdout"
       failed_when: false
 
-    # ---- Defender path exclusions (ONLY the two ART paths) ---------------------
-    # win_shell (returns stdout) - win_powershell returns `output`, so the
-    # changed_when here would reference a missing key and fail the task.
-    - name: Remove the ART Windows Defender path exclusions
+    # ---- Defender path exclusions (ONLY the ones this extension added) ----------
+    # Issue #62: the install records every exclusion path it actually added in
+    # a registry marker (emulation_owner_regkey / _value). Remove exactly those,
+    # then delete the marker. A matching path that is NOT in the marker existed
+    # before the install and is left alone. No marker at all (a host installed
+    # before ownership tracking existed) -> remove nothing and report the
+    # matching paths for manual review; ownership is never guessed from names.
+    # Errors are not swallowed: a failed Remove-MpPreference fails the task.
+    - name: Remove the Defender path exclusions this extension added
       ansible.windows.win_shell: |
-        $artPaths = @('{{ art_install_root }}', '{{ art_atomics_dir }}')
-        $current = (Get-MpPreference).ExclusionPath
-        $removed = @()
-        foreach ($p in $artPaths) {
-          if ($current -contains $p) {
-            Remove-MpPreference -ExclusionPath $p
-            $removed += $p
-          }
+        $ErrorActionPreference = 'Stop'
+        $key = '{{ emulation_owner_regkey }}'
+        $name = '{{ emulation_owner_value }}'
+        $known = @('{{ art_install_root }}', '{{ art_atomics_dir }}', '{{ sandcat_install_dir }}')
+        $current = @((Get-MpPreference).ExclusionPath)
+        $owned = $null
+        if (Test-Path $key) {
+          $owned = (Get-ItemProperty -Path $key -Name $name -ErrorAction SilentlyContinue).$name
         }
-        Write-Output ("removed=" + ($removed -join ','))
-      register: art_exclusion_removal
-      failed_when: false
-      changed_when: "'removed=' in art_exclusion_removal.stdout and art_exclusion_removal.stdout != 'removed='"
+        if ($null -eq $owned) {
+          $present = @($known | Where-Object { $current -contains $_ })
+          Write-Output ("marker=absent")
+          Write-Output ("removed=")
+          Write-Output ("kept-unowned=" + ($present -join ','))
+        } else {
+          $removed = @()
+          foreach ($p in @($owned)) {
+            if ($current -contains $p) {
+              Remove-MpPreference -ExclusionPath $p
+              $removed += $p
+            }
+          }
+          Remove-ItemProperty -Path $key -Name $name
+          $k = Get-Item -Path $key
+          if (-not $k.Property -and -not (Get-ChildItem -Path $key)) {
+            Remove-Item -Path $key
+            $parent = Split-Path -Path $key -Parent
+            $pk = Get-Item -Path $parent
+            if (-not $pk.Property -and -not (Get-ChildItem -Path $parent)) { Remove-Item -Path $parent }
+          }
+          $after = @((Get-MpPreference).ExclusionPath)
+          $kept = @($known | Where-Object { $after -contains $_ })
+          Write-Output ("marker=deleted")
+          Write-Output ("removed=" + ($removed -join ','))
+          Write-Output ("kept-unowned=" + ($kept -join ','))
+        }
+      register: emulation_exclusion_removal
+      changed_when: "'marker=deleted' in emulation_exclusion_removal.stdout"
 
-    - name: Verify the ART exclusions are gone (post-check)
-      ansible.windows.win_shell: |
-        $current = (Get-MpPreference).ExclusionPath
-        $left = $current | Where-Object { $_ -like '*AtomicRedTeam*' }
-        Write-Output ("leftover=" + ($left -join ','))
-      changed_when: false
-      failed_when: false
+    - name: Report Defender exclusions that were kept (not added by this extension)
+      ansible.builtin.debug:
+        msg: >-
+          {{ emulation_exclusion_removal.stdout_lines | select('match', '^(marker|removed|kept-unowned)=') | join(' | ') }}
+          {{ '- no ownership marker on this host (installed before ownership
+          tracking); nothing was removed, review the kept paths by hand.'
+          if 'marker=absent' in emulation_exclusion_removal.stdout else '' }}
 
 - name: Uninstall the Caldera server (emulation VM)
   hosts: emulation_server
@@ -246,7 +266,8 @@
       ansible.builtin.debug:
         msg: >-
           Emulation extension uninstalled. Kept on purpose: git (system
-          tool), all other Defender settings (only the two ART path
-          exclusions were removed), and any GOAD-core hardening. The
+          tool), all other Defender settings (only the exclusions this
+          extension added were removed; pre-existing ones were kept), and any
+          GOAD-core hardening. The
           emulation VM itself stays up (destroy it via the provider/goad
           CLI if you want the machine gone too).

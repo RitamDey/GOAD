@@ -110,7 +110,8 @@ ansible-playbook \
 ```
 It removes, on the agents: the ART dirs + module + profile lines, the Sandcat
 agent (`GOAD-Sandcat` scheduled task, the running process and `C:\Tools\Sandcat`),
-and the ART + sandcat Defender exclusions; and on the emulation VM: the caldera
+and the ART + sandcat Defender exclusions it added (tracked in
+`HKLM:\SOFTWARE\GOAD\Emulation`; exclusions that existed before the install are kept); and on the emulation VM: the caldera
 service + `/opt/caldera` + the Node.js build toolchain + `/etc/emulation` + the
 ufw rule. Kept on purpose: git, powershell-yaml, every other Defender setting,
 the VM itself. Caldera operation reports (`/opt/caldera/data`) are printed as a

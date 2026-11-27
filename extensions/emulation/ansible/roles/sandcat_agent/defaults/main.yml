@@ -26,3 +26,8 @@ sandcat_paw: "{{ inventory_hostname }}"
 # Boot-persistence: a scheduled task (NOT a Windows service - sandcat is a
 # plain console binary and the SCM would kill a non-service exe).
 sandcat_task_name: GOAD-Sandcat
+
+# Defender exclusion ownership (issue #62) - see the same vars in
+# roles/atomic_redteam/defaults/main.yml; keep both in sync.
+emulation_owner_regkey: 'HKLM:\SOFTWARE\GOAD\Emulation'
+emulation_owner_value: OwnedDefenderExclusions

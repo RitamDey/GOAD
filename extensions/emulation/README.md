@@ -211,8 +211,14 @@ Removes: on the agents, `C:\Tools\AtomicRedTeam` (atomics + installers), the
 `invoke-atomicredteam` module at the pinned version (`win_psmodule
 state=absent`), the AllUsers profile lines it wrote, the Sandcat agent (the
 `GOAD-Sandcat` scheduled task, the running `sandcat` process and
-`C:\Tools\Sandcat`), and the Windows Defender `ExclusionPath` entries
-(`Remove-MpPreference`, ONLY the ART and sandcat paths). On the emulation VM,
+`C:\Tools\Sandcat`), and the Windows Defender `ExclusionPath` entries the
+install actually added (`Remove-MpPreference`). The install records each
+exclusion it adds in the registry value
+`HKLM:\SOFTWARE\GOAD\Emulation\OwnedDefenderExclusions`; the uninstall
+removes only those and then deletes the marker, so an exclusion for the same
+path that existed before the install is kept. A host installed before this
+tracking existed has no marker: the uninstall removes no exclusions there and
+lists the matching paths for you to review. On the emulation VM,
 the caldera systemd unit + service, `/opt/caldera`, the Node.js used for the
 UI build (`/opt/node*`), the `/etc/emulation` state dir, the ufw 8888 rule
 (ufw-active hosts only), and the `caldera` service user.

@@ -19,12 +19,24 @@
 # Defender exclusion FIRST. The ART role's exclusions only cover the ART
 # dirs, so sandcat needs its own. ErrorActionPreference=Stop turns a failed
 # Add-MpPreference into a task failure instead of a silent no-op.
+# Ownership (issue #62): the path is recorded in the shared registry marker
+# only if this task adds it, so a pre-existing exclusion survives uninstall.
 - name: Add the Windows Defender path exclusion for the sandcat dir
   ansible.windows.win_shell: |
     $ErrorActionPreference = 'Stop'
+    $key = '{{ emulation_owner_regkey }}'
+    $name = '{{ emulation_owner_value }}'
     $p = '{{ sandcat_install_dir }}'
-    if ((Get-MpPreference).ExclusionPath -notcontains $p) {
+    if (@((Get-MpPreference).ExclusionPath) -notcontains $p) {
       Add-MpPreference -ExclusionPath $p
+      $owned = @()
+      if (Test-Path $key) {
+        $v = (Get-ItemProperty -Path $key -Name $name -ErrorAction SilentlyContinue).$name
+        if ($v) { $owned = @($v) }
+      }
+      $newOwned = [string[]]@($owned + $p | Select-Object -Unique)
+      if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+      New-ItemProperty -Path $key -Name $name -PropertyType MultiString -Value $newOwned -Force | Out-Null
       Write-Output 'added'
     } else { Write-Output 'present' }
   register: sandcat_defender
