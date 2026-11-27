@@ -30,25 +30,18 @@ elastic_heap: "6g"
 # security, so we keep the stock elastic/changeme pair). Override via instance
 # vars if you want different values - every consumer reads these variables.
 #
-# Which identity calls which Kibana/Fleet API class (#16):
-#   user: "elastic" (superuser) - Fleet BOOTSTRAP/WRITE calls: /api/fleet/setup,
-#     agent-policy id lookups + Fleet Server policy wait, enrollment-token
-#     CREATE, Fleet Server host registration, default-output update, the
-#     endpoint/windows package-policy CREATEs and the Defend detect-mode PUT.
-#     Rationale (docs fetched 2026-10-21): the kibana_system reserved role
-#     (elasticsearch v8.19.23 KibanaOwnedReservedRoleDescriptors.kibanaSystem)
-#     manages application privileges only for "kibana-*" apps; the fleet
-#     feature's privileges (fleet all/read, epm, integrations, agents...) are
-#     release-movable and the fleet-setup reserved privilege is explicitly
-#     "Intended for use by the elastic/fleet-server service account only"
-#     (fleet/server/plugin.ts registerKibanaFeature reserved block). Whether
-#     kibana_system holds every Fleet feature privilege live is UNPROVEN - the
-#     superuser removes the ambiguity at zero lab cost.
-#   user: "kibana_system" - REMAINING READ-ONLY calls: the /api/status wait,
-#     the epm package-version GETs, the package_policies GET listings, the
-#     enrollment_api_keys LIST GETs and the fleet_server_hosts GET. If a live
-#     run proves kibana_system carries the full Fleet feature privileges,
-#     these may stay; the split is documented here either way.
+# Kibana/Fleet automation identity (#16): EVERY Kibana and Fleet API call in
+# this extension (status wait, /api/fleet/* reads AND writes, detection-engine
+# calls) and every Elasticsearch call authenticates as `elastic` (superuser).
+# `kibana_system` is used ONLY by Kibana itself for its Elasticsearch
+# connection (templates/kibana.yml) - it is not a Fleet operator identity
+# (Fleet APIs check Kibana feature privileges: Fleet + Integrations), and the
+# built-in-roles docs say its grants "may change between releases".
+# A preflight GET /api/fleet/check-permissions?fleetServerSetup=true runs right
+# after Kibana answers and fails early, naming the identity, if privileges are
+# missing. To use a dedicated provisioning user instead, give it Fleet: All +
+# Integrations: All (all spaces) plus superuser-equivalent ES cluster rights,
+# and point the `user: "elastic"` / elastic_password pairs at it.
 elastic_password: "changeme"
 kibana_system_password: "changeme"
 

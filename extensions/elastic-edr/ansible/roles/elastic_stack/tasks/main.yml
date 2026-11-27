@@ -270,14 +270,47 @@
 - name: Wait for Kibana to answer ({{ kibana_port }})
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/status"
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     status_code: [200]
   register: kbn_status
   until: kbn_status.status == 200
   retries: 30
   delay: 10
   timeout: 30
+
+# #16 - fail early if the automation identity cannot drive Fleet. Every
+# Kibana/Fleet API call in this extension authenticates as `elastic`
+# (kibana_system is reserved for Kibana's own ES connection in kibana.yml).
+# check-permissions answers 200 {success: bool, error?: MISSING_SECURITY |
+# MISSING_PRIVILEGES | MISSING_FLEET_SERVER_SETUP_PRIVILEGES}; 503 is retried
+# while the Fleet plugin is still starting.
+- name: Check Fleet permissions for the automation identity (elastic)
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/check-permissions?fleetServerSetup=true"
+    method: GET
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      kbn-xsrf: "true"
+    return_content: yes
+    status_code: [200, 401, 403, 404, 500, 503]
+  register: fleet_perms
+  until: fleet_perms.status != 503
+  retries: 12
+  delay: 10
+  timeout: 30
+
+- name: Fail if the automation identity lacks Fleet privileges
+  ansible.builtin.fail:
+    msg: >-
+      Fleet permission preflight failed: GET /api/fleet/check-permissions?fleetServerSetup=true
+      as user 'elastic' returned HTTP {{ fleet_perms.status }}
+      (success={{ fleet_perms.json.success | default('n/a') }},
+      error={{ fleet_perms.json.error | default(fleet_perms.json.message | default(fleet_perms.msg | default('n/a'))) }}).
+      All Fleet setup calls below use this identity; fix its privileges
+      (Fleet: All + Integrations: All, or superuser) or elastic_password before re-running.
+  when: fleet_perms.status != 200 or not (fleet_perms.json.success | default(false) | bool)
 
 # Create the Fleet agent policy (idempotent by name) then an enrollment token for it.
 # The policy is preconfigured in kibana.yml (system package / EDR), we fetch its id.
@@ -474,8 +507,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/enrollment_api_keys"
     method: GET
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
@@ -632,8 +665,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/fleet_server_hosts"
     method: GET
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
@@ -687,8 +720,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/outputs/fleet-default-output"
     method: GET
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
@@ -725,8 +758,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/epm/packages/endpoint"
     method: GET
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
@@ -745,8 +778,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/epm/packages/windows"
     method: GET
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
@@ -767,8 +800,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
     method: GET
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
@@ -1408,8 +1441,8 @@
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/enrollment_api_keys"
     method: GET
-    user: "kibana_system"
-    password: "{{ kibana_system_password }}"
+    user: "elastic"
+    password: "{{ elastic_password }}"
     headers:
       kbn-version: "{{ kbn_version }}"
       kbn-xsrf: "true"
