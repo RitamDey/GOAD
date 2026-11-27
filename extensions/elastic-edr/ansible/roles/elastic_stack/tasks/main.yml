@@ -885,25 +885,9 @@
       inputs:
         windows-winlog:
           enabled: true
-          streams:
-            windows.sysmon_operational:
-              enabled: true
-            windows.powershell:
-              enabled: true
-            windows.powershell_operational:
-              enabled: true
-            windows.windows_defender:
-              enabled: true
-            windows.applocker_exe_and_dll:
-              enabled: true
-            windows.applocker_msi_and_script:
-              enabled: true
-            windows.applocker_packaged_app_deployment:
-              enabled: true
-            windows.applocker_packaged_app_execution:
-              enabled: true
-            windows.forwarded:
-              enabled: true
+          # Built from windows_winlog_streams (defaults) - the same list the
+          # health_assertions per-source readiness report reads back (#12).
+          streams: "{{ dict(windows_winlog_streams | zip([{'enabled': true}] * (windows_winlog_streams | length))) }}"
       package:
         name: "windows"
         version: "{{ windows_package_version }}"

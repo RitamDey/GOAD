@@ -466,3 +466,73 @@ the value confirmation is live-gated per the verifier's criterion 1).
 - #7: hash-compare serialization sensitivity may cause benign re-applies;
   documented, deferred.
 - #3: live ES cases explicitly deferred by the issue itself.
+
+---
+
+# PASS 3 evidence blocks (2026-11-27)
+
+## Parse blocker (no issue filed) -- fixed (commit a448c96)
+
+`ansible-playbook install.yml --syntax-check` FAILED at e85f410, so no live run
+could have started:
+- `ansible.builtin.sysctl` does not exist; now `ansible.posix.sysctl` (already
+  in GOAD's ansible/requirements.yml).
+- 7 uri tasks carried `status_code:` at task level ("conflicting action
+  statements"); moved under the `ansible.builtin.uri:` args, values unchanged.
+  This also corrects the PASS 1 #36 note above: the 7 task-level status_code
+  lines were never module arguments until this commit.
+Verification: install.yml + uninstall.yml --syntax-check pass (ansible-core
+2.18.20, ansible.posix / ansible.windows / community.windows); each
+health_assertions stage file passes --syntax-check through a static
+import_tasks harness (the role includes them dynamically).
+
+## Issue #16 -- fixed-static-only (commit 2907137)
+
+Supersedes both earlier #16 blocks. Every Kibana/Fleet API call now
+authenticates as `elastic`: the remaining 7 kibana_system calls in
+elastic_stack (status wait, 2x enrollment-key LIST, fleet_server_hosts GET,
+default-output GET, epm endpoint/windows GETs, package_policies GET) plus the
+2 /api/fleet/agents polls in verify_stack. `grep -rn kibana_system ansible/`
+now hits only kibana.yml, the password-set task and the credentials printout.
+New preflight: GET /api/fleet/check-permissions?fleetServerSetup=true as
+`elastic` (503 retried), failing early with API + identity + error code.
+Preflight condition rendered with ansible-core 2.18 for success /
+MISSING_PRIVILEGES / 401 / 503-without-body.
+Post-fix status: fixed-static-only (live: preflight must return success=true
+on Kibana 8.19.23; README checklist row #16).
+
+## Issue #12 (+ #31 step 6) -- fixed-static-only (this commit)
+
+- New stage health_assertions/tasks/verify_sources.yml (play 3, after
+  aggregate). Expected sources are read back from Fleet: every enabled
+  stream of every enabled package policy attached to the EDR agent policy
+  (`policy_id` or `policy_ids`), plus `health_assertions_endpoint_datasets`
+  when an `endpoint` package policy is attached. Per source: one bounded
+  _search (size 1, newest @timestamp, host.name, host terms agg,
+  ignore_unavailable) -> observed / not observed yet / unhealthy. Only Fleet
+  API failure, no attached integration, or a failed source query fail the
+  play; "not observed yet" never does.
+- #31 step 6: per-index unassigned shards (_cluster/health?level=indices) in
+  the readiness table; cluster status + unassigned count in the play 1
+  summary.
+- verify_stack: persists ha_* API facts (no_log) for play 3; the generic
+  count is relabelled "Data path" and says it does not prove per-source
+  ingestion.
+- windows_winlog_streams (elastic_stack defaults) replaces the hard-coded
+  streams map; the rendered body is a dict of the same 9 streams, each
+  {enabled: true} (rendered and compared).
+Verification: verify_sources.yml ran against a mock Fleet/ES HTTP server under
+ansible-core 2.18: (a) mixed observed/empty streams -> correct table,
+disabled streams and fleet-server policy excluded, play passes; (b) one
+stream 500 -> UNHEALTHY fail naming integration+stream+error; (c) package
+policies 403 -> UNHEALTHY [Fleet API] fail; (d) nothing attached ->
+MISCONFIGURED fail; (e) `policy_ids` response shape -> same as (a).
+Post-fix status: fixed-static-only (live: readiness table on a real run;
+README checklist row #12).
+
+## PASS 3 standing residue (honest)
+
+- Still zero live runs. #3, #7, #28, #31, #33 keep their PASS 2 static
+  fixes; #5 is live-measurement only.
+- verify_sources is a single snapshot taken right after enrollment; quiet
+  sources will show "not observed yet" on a first run by design.

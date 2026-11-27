@@ -1,0 +1,225 @@
+# health_assertions : per-source telemetry readiness (play 3, runs once on the
+# ELASTIC-EDR VM after the windows agents enrolled) - issue #12.
+#
+# Non-invasive: reads Fleet + Elasticsearch state only. It never generates
+# events, runs attacks, or asserts that a detection rule fired.
+#
+# The expected source list is DERIVED FROM THIS DEPLOYMENT, not assumed: every
+# enabled input stream of every package policy attached to the EDR agent policy
+# (system / windows / anything an operator added), plus the Elastic Defend
+# event datasets when an `endpoint` package policy is attached (its streams
+# are not listed in the package policy). Each source is then classified:
+#   observed          - at least one document; latest @timestamp + host shown
+#   not observed yet  - stream absent or empty. NOT a failure: an event of
+#                       that type may simply not have happened yet (AppLocker
+#                       and Defender channels are often quiet on a fresh lab)
+#   unhealthy         - the probe itself failed (HTTP/API error) - fails the play
+# Definite Fleet API / policy failures also fail the play, naming the component.
+#
+# Needs the ha_* facts persisted by stage verify_stack (play 1, same host).
+
+- name: Require the API coordinates persisted by stage verify_stack
+  ansible.builtin.assert:
+    that:
+      - ha_es_url is defined
+      - ha_kibana_url is defined
+      - ha_agent_policy_id is defined
+    fail_msg: >-
+      verify_sources needs the ha_* facts set by stage verify_stack (play 1)
+      on this host. Run the full install.yml (or include play 1) first.
+    quiet: true
+
+# ---- A. Fleet: package policies attached to the EDR agent policy --------------
+- name: List Fleet package policies
+  ansible.builtin.uri:
+    url: "{{ ha_kibana_url }}/api/fleet/package_policies?perPage=1000"
+    method: GET
+    user: "{{ ha_api_user }}"
+    password: "{{ ha_api_password }}"
+    headers:
+      kbn-version: "{{ ha_kbn_version }}"
+      kbn-xsrf: "true"
+    return_content: yes
+    status_code: [200, 400, 401, 403, 404, 500, 503]
+  register: src_pkg_policies
+  failed_when: false
+
+- name: Fail if the Fleet package-policy listing failed (Fleet API unhealthy)
+  ansible.builtin.fail:
+    msg: >-
+      UNHEALTHY [Fleet API]: GET /api/fleet/package_policies returned HTTP
+      {{ src_pkg_policies.status | default('n/a') }}:
+      {{ src_pkg_policies.json | default(src_pkg_policies.msg | default('no body')) | to_json | truncate(400) }}
+  when: (src_pkg_policies.status | default(0)) != 200
+
+# Fleet 8.x returns `policy_id`; newer releases also return `policy_ids`.
+- name: Select the package policies attached to the EDR agent policy
+  ansible.builtin.set_fact:
+    src_attached: >-
+      {{ (src_pkg_policies.json['items'] | default([]))
+         | selectattr('policy_id', 'defined')
+         | selectattr('policy_id', 'equalto', ha_agent_policy_id) | list
+         + (src_pkg_policies.json['items'] | default([]))
+         | rejectattr('policy_id', 'defined')
+         | selectattr('policy_ids', 'defined')
+         | selectattr('policy_ids', 'contains', ha_agent_policy_id) | list }}
+
+- name: Build the expected telemetry sources from the attached package policies
+  ansible.builtin.set_fact:
+    src_expected: >-
+      {%- set out = [] -%}
+      {%- for pp in src_attached if pp.enabled | default(true) -%}
+      {%- set ns = pp.namespace | default('default', true) -%}
+      {%- for inp in pp.inputs | default([]) if inp.enabled | default(false) -%}
+      {%- for st in inp.streams | default([]) if (st.enabled | default(false)) and (st.data_stream.dataset | default('')) -%}
+      {%- set _ = out.append({'integration': pp.package.name | default('?'), 'policy': pp.name | default('?'),
+                              'stream': (st.data_stream.type | default('logs')) ~ '-' ~ st.data_stream.dataset ~ '-' ~ ns}) -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {%- if (pp.package.name | default('')) == 'endpoint' -%}
+      {%- for ds in health_assertions_endpoint_datasets -%}
+      {%- set _ = out.append({'integration': 'endpoint', 'policy': pp.name | default('?'),
+                              'stream': 'logs-' ~ ds ~ '-' ~ ns}) -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Fail if no telemetry integration is attached to the EDR agent policy
+  ansible.builtin.fail:
+    msg: >-
+      MISCONFIGURED [Fleet policy {{ ha_agent_policy_id }}]: no enabled
+      package policy with data streams is attached
+      (attached: {{ src_attached | map(attribute='name') | list | join(', ') or 'none' }}).
+      The agents are enrolled but have nothing to collect.
+  when: src_expected | length == 0
+
+# ---- B. Elasticsearch: data streams + latest event per source ----------------
+- name: List data streams
+  ansible.builtin.uri:
+    url: "{{ ha_es_url }}/_data_stream?expand_wildcards=all"
+    method: GET
+    user: "{{ ha_api_user }}"
+    password: "{{ ha_api_password }}"
+    return_content: yes
+    status_code: [200, 401, 403, 404, 500, 503]
+  register: src_data_streams
+  failed_when: false
+
+- name: Index the data streams by name
+  ansible.builtin.set_fact:
+    src_ds_index: >-
+      {{ dict((src_data_streams.json.data_streams | default([])) | map(attribute='name')
+              | zip((src_data_streams.json.data_streams | default([])) | map(attribute='status'))) }}
+
+# One bounded query per expected stream: newest document + distinct hosts.
+# ignore_unavailable/allow_no_indices make a missing stream a 200 with 0 hits.
+- name: Probe the latest event per expected source
+  ansible.builtin.uri:
+    url: "{{ ha_es_url }}/{{ item.stream }}/_search?ignore_unavailable=true&allow_no_indices=true"
+    method: POST
+    user: "{{ ha_api_user }}"
+    password: "{{ ha_api_password }}"
+    body_format: json
+    body:
+      size: 1
+      timeout: "10s"
+      track_total_hits: false
+      sort:
+        - "@timestamp": { order: "desc", unmapped_type: "date" }
+      _source: ["@timestamp", "host.name"]
+      aggs:
+        hosts:
+          terms: { field: "host.name", size: 50 }
+    return_content: yes
+    timeout: 30
+    status_code: [200, 400, 401, 403, 404, 500, 503]
+  loop: "{{ src_expected }}"
+  loop_control:
+    label: "{{ item.stream }}"
+  register: src_probe
+  failed_when: false
+
+- name: Classify each source (observed / not observed yet / unhealthy)
+  ansible.builtin.set_fact:
+    src_report: >-
+      {%- set out = [] -%}
+      {%- for r in src_probe.results -%}
+      {%- set hits = (r.json.hits.hits | default([])) if (r.status | default(0)) == 200 else [] -%}
+      {%- if (r.status | default(0)) != 200 -%}
+      {%- set state = 'unhealthy' -%}
+      {%- set detail = 'HTTP ' ~ (r.status | default('n/a')) ~ ' ' ~ (r.json.error.type | default(r.msg | default(''))) ~ ': ' ~ (r.json.error.reason | default('')) -%}
+      {%- elif hits | length > 0 -%}
+      {%- set state = 'observed' -%}
+      {%- set detail = '' -%}
+      {%- else -%}
+      {%- set state = 'not observed yet' -%}
+      {%- set detail = '' -%}
+      {%- endif -%}
+      {%- set doc = (hits | first)._source if hits | length > 0 else {} -%}
+      {%- set _ = out.append({
+            'integration': r.item.integration,
+            'stream': r.item.stream,
+            'state': state,
+            'exists': 'yes' if r.item.stream in src_ds_index else 'no',
+            'ds_health': src_ds_index[r.item.stream] | default('-'),
+            'last_seen': doc['@timestamp'] | default('-'),
+            'last_host': (doc.host.name | default('-')) if doc.host is defined else '-',
+            'hosts': r.json.aggregations.hosts.buckets | default([]) | length if state == 'observed' else 0,
+            'detail': detail | truncate(200)}) -%}
+      {%- endfor -%}
+      {{ out }}
+
+# ---- C. Cluster: unassigned shards per index (#31 step 6) --------------------
+- name: Read per-index cluster health
+  ansible.builtin.uri:
+    url: "{{ ha_es_url }}/_cluster/health?level=indices"
+    method: GET
+    user: "{{ ha_api_user }}"
+    password: "{{ ha_api_password }}"
+    return_content: yes
+    status_code: [200, 401, 403, 408, 500, 503]
+  register: src_cluster_health
+  failed_when: false
+
+- name: Collect indices with unassigned shards
+  ansible.builtin.set_fact:
+    src_unassigned: >-
+      {{ (src_cluster_health.json.indices | default({})) | dict2items
+         | selectattr('value.unassigned_shards', 'defined')
+         | selectattr('value.unassigned_shards', '>', 0)
+         | map(attribute='key') | sort | list }}
+
+# ---- D. Report ---------------------------------------------------------------
+- name: Show per-source telemetry readiness
+  ansible.builtin.debug:
+    msg: |
+      =============== TELEMETRY SOURCE READINESS ===============
+      Fleet agent policy : {{ ha_agent_policy_id }}
+      Integrations       : {{ src_attached | map(attribute='package.name') | list | unique | join(', ') }}
+      Cluster            : {% if (src_cluster_health.status | default(0)) == 200 %}{{ src_cluster_health.json.status | default('?') }}, unassigned_shards={{ src_cluster_health.json.unassigned_shards | default('?') }}{% if src_unassigned | length > 0 %} in {{ src_unassigned[:10] | join(', ') }}{{ ' ...' if src_unassigned | length > 10 else '' }} (single-node lab expects 0 - #31){% endif %}{% else %}health probe FAILED (HTTP {{ src_cluster_health.status | default('n/a') }}){% endif %}
+
+      ----------------------------------------------------------
+      {% for s in src_report %}
+      {{ '%-17s' | format(s.state) }} {{ '%-52s' | format(s.stream) }} {% if s.state == 'observed' %}last={{ s.last_seen }} host={{ s.last_host }} hosts={{ s.hosts }}{% elif s.state == 'unhealthy' %}{{ s.detail }}{% else %}stream_exists={{ s.exists }}{% endif %}
+
+      {% endfor %}
+      ----------------------------------------------------------
+      observed={{ src_report | selectattr('state', 'equalto', 'observed') | list | length }}
+      not_observed_yet={{ src_report | selectattr('state', 'equalto', 'not observed yet') | list | length }}
+      unhealthy={{ src_report | selectattr('state', 'equalto', 'unhealthy') | list | length }}
+      'not observed yet' is NOT a failure: no event of that type has been
+      ingested so far (quiet channels such as AppLocker, Defender or alerts
+      are normal on a fresh lab). Generate the activity yourself and re-check
+      in Discover. This check never runs attacks or validates alerts.
+      ==========================================================
+
+- name: Fail on definite probe failures (unhealthy sources)
+  ansible.builtin.fail:
+    msg: >-
+      UNHEALTHY telemetry probe(s) - the query itself failed, this is not a
+      no-data condition:
+      {% for s in src_report | selectattr('state', 'equalto', 'unhealthy') %}
+      [{{ s.integration }}] {{ s.stream }}: {{ s.detail }};
+      {% endfor %}
+  when: src_report | selectattr('state', 'equalto', 'unhealthy') | list | length > 0

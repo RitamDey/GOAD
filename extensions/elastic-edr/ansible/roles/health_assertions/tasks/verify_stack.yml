@@ -10,6 +10,20 @@
 # EXECUTE on timeout - a task placed after a until:-retry task can never
 # run, because retry exhaustion fails the host first.
 
+# Persist the API coordinates the later stages need (#12). Play 3 (stage
+# verify_sources) runs on this host without the elastic_stack role, so its
+# defaults are not in scope there; set_fact host facts survive across plays
+# and still honour any inventory/extra-vars override of these values.
+- name: Persist stack API coordinates for later health stages
+  ansible.builtin.set_fact:
+    ha_es_url: "http://localhost:{{ es_http_port }}"
+    ha_kibana_url: "http://localhost:{{ kibana_port }}"
+    ha_api_user: "elastic"
+    ha_api_password: "{{ elastic_password }}"
+    ha_kbn_version: "{{ kbn_version }}"
+    ha_agent_policy_id: "{{ policy_id }}"
+  no_log: true
+
 - name: Fetch enrolled Fleet agents
   ansible.builtin.uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/agents?perPage=100"
@@ -189,6 +203,22 @@
           {% endif %}
           {% endif %}
 
+# ---- 3b. Cluster health / unassigned shards (#31 step 6) --------------------
+# Reported, not asserted: on this single-node lab every shard should be
+# assigned (replicas=0 via logs@custom/metrics@custom). Unassigned shards mean
+# some index still carries replicas >= 1 - the per-index list is printed by
+# the verify_sources stage after the agents have created their data streams.
+- name: Read cluster health
+  ansible.builtin.uri:
+    url: "http://localhost:{{ es_http_port }}/_cluster/health"
+    method: GET
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    return_content: yes
+    status_code: [200, 401, 403, 408, 500, 503]
+  register: es_cluster_health
+  failed_when: false
+
 # ---- 4. One-screen summary ----------------------------------------------------
 # C5 fix: report the STORED posture (what the last provision actually applied),
 # not the intent flag - a flipped-but-not-yet-provisioned flag must not print
@@ -225,12 +255,16 @@
   ansible.builtin.debug:
     msg: |
       ==================== STACK HEALTH ====================
-      Kibana / Fleet   : http://{{ hostvars[inventory_hostname].ansible_host }}:{{ kibana_port }}
-      Elasticsearch    : http://{{ hostvars[inventory_hostname].ansible_host }}:{{ es_http_port }}
+      Kibana / Fleet   : http://{{ hostvars[inventory_hostname].ansible_host }}:{{ kibana_port }} (reachable; Fleet permission preflight passed as 'elastic')
+      Elasticsearch    : http://{{ hostvars[inventory_hostname].ansible_host }}:{{ es_http_port }} ({{ 'reachable' if (es_cluster_health.status | default(0)) == 200 else 'cluster health probe FAILED: HTTP ' ~ (es_cluster_health.status | default('n/a')) }})
+      Cluster health   : {% if (es_cluster_health.status | default(0)) == 200 %}{{ es_cluster_health.json.status | default('?') }}, unassigned_shards={{ es_cluster_health.json.unassigned_shards | default('?') }}{{ '  <-- single-node lab expects 0 (#31)' if (es_cluster_health.json.unassigned_shards | default(0) | int) > 0 else '' }}{% else %}unknown{% endif %}
+
       Fleet Server     : {{ fleet_server_host_url | default('https://' ~ hostvars[inventory_hostname].ansible_host ~ ':' ~ (fleet_server_port | default(8220))) }}
       Agents online    : {{ (fleet_agents_online.json['items'] | default([])) | selectattr('status','equalto','online') | list | length }} / {{ (fleet_agents_online.json['items'] | default([])) | length }}
       Detection rules  : {{ rules_status.json.rules_installed | default(0) }} prepackaged installed (stored posture: {{ pr_stored_posture | default('UNKNOWN - not provisioned yet') }}; configured flag: {{ 'ENABLED' if prepackaged_rules_enabled | default(true) | bool else 'DISABLED' }})
-      Event data       : {{ es_data_count.json.count | default(0) }} docs in logs-*/metrics-*
+      Data path        : {{ es_data_count.json.count | default(0) }} docs across logs-*/metrics-* (any stream - proves the
+                         agent->ES path only, NOT that each telemetry source works;
+                         per-source status is reported by stage verify_sources)
       Windows agents   : enroll in the next play - their online status is
                          asserted there (stage: verify_agents), then rolled up
                          (stage: aggregate)

@@ -9,8 +9,22 @@
 #   tasks/verify_stack.yml       - play 1: stack-side assertions
 #   tasks/verify_agents.yml      - play 2: per-windows-host agent assertions
 #   tasks/aggregate.yml          - play 3: cross-host roll-up table + grade
+#   tasks/verify_sources.yml     - play 3: per-source telemetry readiness (#12)
 #
 # Tunables:
 health_assertions_agent_timeout_retries: 12   # x10s = 2 min for agents to come online
 health_assertions_data_retries: 18            # x10s = 3 min for first docs to land
 health_assertions_rules_retries: 10           # x10s = engine rule finalization
+
+# Elastic Defend event datasets probed by verify_sources when an `endpoint`
+# package policy is attached (the endpoint package policy does not list its
+# data streams, unlike system/windows). endpoint.alerts stays empty until a
+# protection or detection fires - "not observed yet" there is normal.
+health_assertions_endpoint_datasets:
+  - endpoint.events.process
+  - endpoint.events.network
+  - endpoint.events.file
+  - endpoint.events.registry
+  - endpoint.events.library
+  - endpoint.events.security
+  - endpoint.alerts

@@ -8,7 +8,9 @@
 #          enroll it in the Fleet Server, then assert each endpoint came up
 #          healthy (per-host results; no single slow host fails the play).
 # Play 3 : roll up the per-host results into one table on the elastic-edr VM
-#          (stage: aggregate) and grade the fleet.
+#          (stage: aggregate) and grade the fleet, then report per-source
+#          telemetry readiness (stage: verify_sources, #12): observed / not
+#          observed yet / unhealthy for every stream this deployment enabled.
 #
 # Inter-play failure gate (#52): any_errors_fatal on all three plays. A
 # stack-side failure must not leave play 2 instrumenting agents against a
@@ -64,3 +66,4 @@
   any_errors_fatal: true
   roles:
     - { role: 'health_assertions', tags: 'health_assertions', stage: 'aggregate' }
+    - { role: 'health_assertions', tags: 'health_assertions', stage: 'verify_sources' }

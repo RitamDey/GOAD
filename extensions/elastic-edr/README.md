@@ -351,6 +351,39 @@ rules" + Enabled).
   stay enabled-but-dormant until the inputs are deliberately enabled (see the
   note in Two hunting postures above).
 
+## Health checks: deployment readiness vs. manual validation
+
+Provisioning ends with read-only health stages. Each one reports a separate
+layer, so a problem in one layer is not hidden by a pass in another:
+
+| Stage (play) | What it reports | Fails the run when |
+|---|---|---|
+| `verify_stack` (1) | Kibana reachable + Fleet permission preflight (`elastic`), Elasticsearch reachable, cluster status / unassigned shards, Fleet Server agent online, prepackaged rules installed, data path (any doc in `logs-*`/`metrics-*`) | an API call fails, Fleet Server never comes online, rules are missing, or no data reaches Elasticsearch at all |
+| `verify_agents` (2) | per Windows host: agent service, agent self-reported health, 4688 / 4104 logging, AppLocker channels and audit-only posture | (per-host, non-fatal) |
+| `aggregate` (3) | the per-host table plus the expected-vs-reported host census | no host reported at all |
+| `verify_sources` (3) | **per telemetry source**: every enabled stream of every package policy attached to `GOAD-EDR-Policy` (read back from Fleet, not hard-coded) plus the Elastic Defend event datasets, each shown as `observed` (latest `@timestamp`, host, host count), `not observed yet`, or `unhealthy`; per-index unassigned shards | the Fleet package-policy API fails, no integration is attached, or a source query errors |
+
+The generic data-path count only proves the agent-to-Elasticsearch path
+works. It does not prove that every source is ingesting; use the
+`verify_sources` table for that.
+
+`not observed yet` is not a failure. It means no event of that type has been
+ingested so far. On a fresh lab, AppLocker, Defender, `endpoint.alerts` and
+sometimes PowerShell are quiet until someone does something. The checks never
+generate attacks, change lab state to force events, or require a detection
+rule to fire.
+
+Checking that an event leads to an alert is a manual step: run the activity
+yourself, confirm the source event appears in Discover (for example
+`logs-windows.sysmon_operational-default`), then check the rule's
+prerequisites and its alert in Security -> Alerts. To re-check source
+readiness later without reprovisioning, query the newest document of a
+stream:
+
+```
+GET logs-windows.sysmon_operational-default/_search?size=1&sort=@timestamp:desc
+```
+
 ## Live-run validation checklist (standing gate)
 
 This branch has ZERO live runs. Every fix landed with static verification
@@ -365,8 +398,9 @@ live-run issues, converted into a runbook:
 | #28 | fleet-server bootstrap succeeds with `--url=https://localhost:8220 --insecure` (self-signed); note whether the OLD `--url=http://localhost:5601` form would also have worked | provision once; if the install step fails, read the diagnostic task's journalctl tail |
 | #16 | Fleet automation identity: the preflight `Check Fleet permissions for the automation identity (elastic)` task passes, and every Fleet call (all as `elastic`) answers 2xx | watch the provision run; `GET /api/fleet/check-permissions?fleetServerSetup=true` as `elastic` must return `{"success":true}`. `kibana_system` is only used by Kibana itself (kibana.yml) |
 | #23 | after a posture flip, `_find` returns `total >= 1` for the targeted state and the marker updates | flip `prepackaged_rules_enabled` + re-provision; `cat /etc/elastic-edr/prepackaged-rules-state` must match the flag only after a green run |
-| #31 | future backing indices inherit replicas=0 through `logs@custom`/`metrics@custom` | provision once, then read the "effective resolved template settings" line from the stack play output (`_simulate_index` on logs-windows.sysmon_operational-2026.01.01) - expect `number_of_replicas=0` and `goad-edr-logs`; if it reads 1 the integration template wins - apply the escalation (dedicated low-priority composable template). Also confirm after 24h+: `GET logs-*/_settings` shows `number_of_replicas: "0"` on every backing index and the cluster stays green |
-| #5/#12 | real ingest volume vs the 60-day ILM window | `GET _cat/indices?v&s=store.size:desc` daily for the first week; measure GB/day, tighten `elastic_ilm_retention_days` per the Data retention section |
+| #31 | future backing indices inherit replicas=0 through `logs@custom`/`metrics@custom` | provision once, then read the "effective resolved template settings" line from the stack play output (`_simulate_index` on logs-windows.sysmon_operational-2026.01.01) - expect `number_of_replicas=0` and `goad-edr-logs`; if it reads 1 the integration template wins - apply the escalation (dedicated low-priority composable template). Also confirm after 24h+: `GET logs-*/_settings` shows `number_of_replicas: "0"` on every backing index and the cluster stays green. The `Cluster` line of the `TELEMETRY SOURCE READINESS` table (stage `verify_sources`, after the agents created their data streams) must show `unassigned_shards=0`; otherwise it lists the offending indices |
+| #5 | real ingest volume vs the 60-day ILM window | `GET _cat/indices?v&s=store.size:desc` daily for the first week; measure GB/day, tighten `elastic_ilm_retention_days` per the Data retention section |
+| #12 | the `TELEMETRY SOURCE READINESS` table (stage `verify_sources`) lists exactly the streams enabled in this deployment, and Sysmon / system.security / endpoint.events.process show `observed` with a recent timestamp | read the table at the end of the provision run; `not observed yet` on quiet channels is expected |
 
 ## What GOAD core does to your specimen (read before writing detections)
 

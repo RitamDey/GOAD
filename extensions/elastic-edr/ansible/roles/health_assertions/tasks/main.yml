@@ -3,6 +3,7 @@
 #   - { role: 'health_assertions', stage: 'verify_stack' }   (play 1)
 #   - { role: 'health_assertions', stage: 'verify_agents' }  (play 2)
 #   - { role: 'health_assertions', stage: 'aggregate' }      (play 3)
+#   - { role: 'health_assertions', stage: 'verify_sources' } (play 3, #12)
 # Each stage is a task file so the three plays stay independently re-runnable
 # and the failure diagnostics stay scoped to the stage that failed.
 

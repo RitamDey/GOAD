@@ -90,6 +90,24 @@ edr_preset: "EDRComplete"
 endpoint_policy_name: "goad-elastic-defend"
 windows_policy_name: "goad-windows-sysmon"
 
+# windows integration winlog streams enabled on {{ windows_policy_name }}
+# (battle-tested lab set: Sysmon, PowerShell classic + operational, Defender,
+# the four AppLocker channels, forwarded events). Single source of truth: the
+# package-policy create task builds its `streams` map from this list, and the
+# health_assertions per-source report (#12) reads the deployed package policy
+# back from Fleet rather than assuming this list. Remove an entry to disable
+# that stream on a fresh install (an existing package policy is not updated).
+windows_winlog_streams:
+  - windows.sysmon_operational
+  - windows.powershell
+  - windows.powershell_operational
+  - windows.windows_defender
+  - windows.applocker_exe_and_dll
+  - windows.applocker_msi_and_script
+  - windows.applocker_packaged_app_deployment
+  - windows.applocker_packaged_app_execution
+  - windows.forwarded
+
 # Prepackaged detection rules: enable after install?
 #   true  = install + enable ALL prepackaged rules (out-of-the-box SIEM)
 #   false = install only, rules stay DISABLED - solo hunting: attack, study
