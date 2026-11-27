@@ -62,3 +62,11 @@ art_profile_marker: "# goad-emulation-extension"
 # Health-check tuning (verify_agents stage)
 art_health_retries: 6      # x10s = 1 min for the module import to settle
 art_health_delay: 10
+
+# Defender exclusion ownership (issue #62). The install records the exclusion
+# paths IT added in this registry value; the uninstall removes only those, so
+# an exclusion that already existed before the extension is never touched.
+# The registry (not a file) because the uninstall deletes C:\Tools\... first.
+# Keep in sync with roles/sandcat_agent/defaults/main.yml.
+emulation_owner_regkey: 'HKLM:\SOFTWARE\GOAD\Emulation'
+emulation_owner_value: OwnedDefenderExclusions

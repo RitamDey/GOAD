@@ -69,17 +69,34 @@
 # ---- Defender exclusions FIRST (so the module install is not quarantined) ------
 # ErrorActionPreference=Stop turns a failed Add-MpPreference into a task
 # failure instead of a silent no-op.
+# Ownership (issue #62): only a path this task actually adds is recorded in the
+# registry marker (emulation_owner_regkey / _value). A path that was already
+# excluded before the install is left out, so the uninstall never removes it.
+# The marker is a union with what earlier runs recorded, so a re-run keeps
+# ownership of the paths it added the first time.
 - name: Add the Windows Defender path exclusions for the ART directories
   ansible.windows.win_shell: |
     $ErrorActionPreference = 'Stop'
+    $key = '{{ emulation_owner_regkey }}'
+    $name = '{{ emulation_owner_value }}'
     $paths = @('{{ art_install_root }}', '{{ art_atomics_dir }}')
-    $current = (Get-MpPreference).ExclusionPath
+    $owned = @()
+    if (Test-Path $key) {
+      $v = (Get-ItemProperty -Path $key -Name $name -ErrorAction SilentlyContinue).$name
+      if ($v) { $owned = @($v) }
+    }
+    $current = @((Get-MpPreference).ExclusionPath)
     $added = @()
     foreach ($p in $paths) {
       if ($current -notcontains $p) {
         Add-MpPreference -ExclusionPath $p
         $added += $p
       }
+    }
+    if ($added.Count -gt 0) {
+      $newOwned = [string[]]@($owned + $added | Select-Object -Unique)
+      if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+      New-ItemProperty -Path $key -Name $name -PropertyType MultiString -Value $newOwned -Force | Out-Null
     }
     Write-Output ("added=" + ($added -join ','))
   register: art_defender_exclusions
