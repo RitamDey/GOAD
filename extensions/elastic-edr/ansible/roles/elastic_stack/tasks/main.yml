@@ -113,7 +113,7 @@
     mode: "0660"
 
 - name: Raise vm.max_map_count
-  ansible.builtin.sysctl:
+  ansible.posix.sysctl:
     name: vm.max_map_count
     value: "262144"
     state: present
@@ -384,8 +384,8 @@
       kbn-xsrf: "true"
     body_format: json
     body: {}
+    status_code: [200, 400]
   register: fleet_setup
-  status_code: [200, 400]
   until: fleet_setup.status in [200, 400]
   failed_when: >-
     fleet_setup.status not in [200, 400] or
@@ -820,8 +820,8 @@
         name: "endpoint"
         title: "Elastic Defend"
         version: "{{ endpoint_package_version }}"
+    status_code: [200, 409]
   register: endpoint_policy
-  status_code: [200, 409]
   until: endpoint_policy.status in [200, 409]
   retries: 5
   delay: 5
@@ -874,8 +874,8 @@
       package:
         name: "windows"
         version: "{{ windows_package_version }}"
+    status_code: [200, 409]
   register: windows_policy
-  status_code: [200, 409]
   until: windows_policy.status in [200, 409]
   retries: 5
   delay: 5
@@ -1172,8 +1172,8 @@
                           supported: true
       version: "{{ endpoint_package_version }}"
       force: true
+    status_code: [200, 409]
   register: endpoint_detect
-  status_code: [200, 409]
   until: endpoint_detect.status in [200, 409]
   retries: 5
   delay: 5
@@ -1205,8 +1205,8 @@
       kbn-xsrf: "true"
     body_format: json
     body: {}
+    status_code: [200, 400]
   register: de_enable
-  status_code: [200, 400]
   until: de_enable.status in [200, 400]
   failed_when: >-
     de_enable.status not in [200, 400] or
@@ -1309,8 +1309,8 @@
       # rule-management source (PARAMS_IMMUTABLE_FIELD / KQL_FILTER_IMMUTABLE_RULES).
       query: 'alert.attributes.params.immutable: true'
       action: "enable"
+    status_code: [200, 400]
   register: de_bulk_enable
-  status_code: [200, 400]
   until: de_bulk_enable.status in [200, 400]
   failed_when: >-
     de_bulk_enable.status not in [200, 400] or
@@ -1335,8 +1335,8 @@
     body:
       query: 'alert.attributes.params.immutable: true'
       action: "disable"
+    status_code: [200, 400]
   register: de_bulk_disable
-  status_code: [200, 400]
   until: de_bulk_disable.status in [200, 400]
   failed_when: >-
     de_bulk_disable.status not in [200, 400] or
